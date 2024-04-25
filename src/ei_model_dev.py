@@ -115,11 +115,11 @@ class FairBatch(EIModel):
                             
                             for module in model_adv.layers:
                                 if hasattr(module, 'weight'):
-                                    # with torch.no_grad():
-                                    module.weight.data = module.weight.data.clamp(weight_min, weight_max)
+                                    with torch.no_grad():
+                                        module.weight.data = module.weight.data.clamp(weight_min, weight_max)
                                 if hasattr(module, 'bias'):
-                                    # with torch.no_grad():
-                                    module.bias.data = module.bias.data.clamp(bias_min, bias_max)
+                                    with torch.no_grad():
+                                        module.bias.data = module.bias.data.clamp(bias_min, bias_max)
 
                         Y_hat_max = Y_hat_pga.clone().detach().requires_grad_()
                     else:
@@ -149,7 +149,6 @@ class FairBatch(EIModel):
                 else:
                     batch_f_loss.append(f_loss)
             
-            # batch ends
             p_losses.append(np.mean(batch_p_loss))
             f_losses.append(np.mean(batch_f_loss))
 
@@ -162,40 +161,12 @@ class FairBatch(EIModel):
             accuracies.append(accuracy)
             ei_disparities.append(ei_disparity)
 
-        if alpha > 0.:
-            self.model_adv = model_adv
-        else:
-            self.model_adv = self.model
         self.train_history.accuracy = accuracies
         self.train_history.p_loss = p_losses
         self.train_history.f_loss = f_losses
         self.train_history.ei_disparity = ei_disparities
-        
-        
-    def evaluate(self, dataset):
-        
-        # if alpha != 0.:
-        #     model = deepcopy(self.model)
-        #     for module in model.layers:
-        #         if hasattr(module, 'weight'):
-        #             module.weight.data += alpha
-        #         if hasattr(module, 'bias'):
-        #             module.bias.data += alpha
-        # else:
-        #     model = self.model
-
-        Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
-        Y_hat_max = self.effort_model(self.model_adv, dataset, dataset.X)
-        print(f'Y_hat    : {Y_hat[:5].T}')
-        print(f'Y_hat_max: {Y_hat_max[:5].T}')
-        print()
-        Y_hat_max = Y_hat_max.reshape(-1).detach().numpy()
-        accuracy, ei_disparity = model_performance(dataset.Y.detach().numpy(), dataset.Z.detach().numpy(), Y_hat, Y_hat_max, self.tau)
-        
-        return accuracy, ei_disparity
     
-    
-    def eval(self, dataset, alpha, sensitive_attrs):
+    def predict(self, dataset, alpha, sensitive_attrs):
         Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
         if alpha > 0: 
             model_adv = deepcopy(self.model)
@@ -231,16 +202,32 @@ class FairBatch(EIModel):
                 
                 for module in model_adv.layers:
                     if hasattr(module, 'weight'):
-                        # with torch.no_grad():
-                        module.weight.data = module.weight.data.clamp(weight_min, weight_max)
+                        with torch.no_grad():
+                            module.weight.data = module.weight.data.clamp(weight_min, weight_max)
                     if hasattr(module, 'bias'):
-                        # with torch.no_grad():
-                        module.bias.data = module.bias.data.clamp(bias_min, bias_max)
+                        with torch.no_grad():
+                            module.bias.data = module.bias.data.clamp(bias_min, bias_max)
 
             Y_hat_max = Y_hat_pga.clone().detach()
         else:
-            Y_hat_max = self.effort_model(self.model_adv, dataset, dataset.X)
+            Y_hat_max = self.effort_model(self.model, dataset, dataset.X)
         
+        return Y_hat, Y_hat_max.reshape(-1).detach().numpy()
+    
+    def evaluate(self, dataset, alpha):
+        
+        if alpha != 0.:
+            model_adv = deepcopy(self.model)
+            for module in model_adv.layers:
+                if hasattr(module, 'weight'):
+                    module.weight.data += alpha
+                if hasattr(module, 'bias'):
+                    module.bias.data += alpha
+        else:
+            model_adv = self.model
+
+        Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
+        Y_hat_max = self.effort_model(model_adv, dataset, dataset.X)
         Y_hat_max = Y_hat_max.reshape(-1).detach().numpy()
         accuracy, ei_disparity = model_performance(dataset.Y.detach().numpy(), dataset.Z.detach().numpy(), Y_hat, Y_hat_max, self.tau)
         
