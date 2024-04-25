@@ -56,8 +56,8 @@ class FairBatch(EIModel):
         
         for epoch in tqdm.trange(n_epochs, desc=f"Training [lambda={lamb:.2f}]", unit="epochs", colour='#0091ff'):
         
-            batch_p_loss = [] # batch prediction loss
-            batch_f_loss = [] # batch fairness loss
+            batch_pred_losses = [] # batch prediction loss
+            batch_fair_losses = [] # batch fairness loss
 
             for _, (X_batch, Y_batch, Z_batch) in enumerate(train_loader):
                 Y_hat = self.model(X_batch)
@@ -65,11 +65,11 @@ class FairBatch(EIModel):
                 batch_loss = 0
 
                 # prediction loss
-                pred_loss = loss_fn(Y_hat.reshape(-1), Y_batch)
-                batch_loss += (1-lamb)*pred_loss
+                batch_pred_loss = loss_fn(Y_hat.reshape(-1), Y_batch)
+                batch_loss += (1-lamb)*batch_pred_loss
 
                 # fairness loss
-                fair_loss = 0
+                batch_fair_loss = 0
                 # EI_Constraint
                 if torch.sum(Y_hat<self.tau) > 0:
                     X_batch_e = X_batch[(Y_hat<self.tau).reshape(-1),:]
@@ -86,9 +86,9 @@ class FairBatch(EIModel):
                         if group_idx.sum() == 0:
                             continue
                         loss_z[z] = loss_fn(Y_hat_max.reshape(-1)[group_idx], torch.ones(group_idx.sum()))
-                        fair_loss += torch.abs(loss_z[z] - loss_mean)
+                        batch_fair_loss += torch.abs(loss_z[z] - loss_mean)
 
-                batch_loss += lamb*fair_loss
+                batch_loss += lamb*batch_fair_loss
                 
                 optimizer.zero_grad()
                 if (torch.isnan(batch_loss)).any():
@@ -96,21 +96,20 @@ class FairBatch(EIModel):
                 batch_loss.backward()
                 optimizer.step()
 
-                batch_p_loss.append(pred_loss.item())
-                if hasattr(fair_loss,'item'):
-                    batch_f_loss.append(fair_loss.item())
+                batch_pred_losses.append(batch_pred_loss.item())
+                if hasattr(batch_fair_loss,'item'):
+                    batch_fair_losses.append(batch_fair_loss.item())
                 else:
-                    batch_f_loss.append(fair_loss)
+                    batch_fair_losses.append(batch_fair_loss)
             
-            # batch ends
-            pred_losses.append(np.mean(batch_p_loss))
-            fair_losses.append(np.mean(batch_f_loss))
+            pred_losses.append(np.mean(batch_pred_losses))
+            fair_losses.append(np.mean(batch_fair_losses))
 
-            Y_hat_train = self.model(dataset.X).reshape(-1).detach().numpy()
-            Y_hat_max_train = self.effort_model(self.model, dataset, dataset.X)
-            Y_hat_max_train = Y_hat_max_train.reshape(-1).detach().numpy()
+            Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
+            Y_hat_max = self.effort_model(self.model, dataset, dataset.X)
+            Y_hat_max = Y_hat_max.reshape(-1).detach().numpy()
             
-            accuracy, ei_disparity = model_performance(dataset.Y.detach().numpy(), dataset.Z.detach().numpy(), Y_hat_train, Y_hat_max_train, self.tau)
+            accuracy, ei_disparity = model_performance(dataset.Y.detach().numpy(), dataset.Z.detach().numpy(), Y_hat, Y_hat_max, self.tau)
             
             accuracies.append(accuracy)
             ei_disparities.append(ei_disparity)
@@ -120,24 +119,14 @@ class FairBatch(EIModel):
         self.train_history.f_loss = fair_losses
         self.train_history.ei_disparity = ei_disparities
         
-    
-    def predict(self, dataset, alpha):
+    def predict(self, dataset):
         Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
-
-        model_adv = deepcopy(self.model)
-        for module in model_adv.layers:
-            if hasattr(module, 'weight'):
-                module.weight.data = module.weight.data + alpha
-            if hasattr(module, 'bias'):
-                module.bias.data = module.bias.data.item() + alpha
-        
-        Y_hat_max = self.effort_model(model_adv, dataset, dataset.X)
+        Y_hat_max = self.effort_model(self.model, dataset, dataset.X)
         
         return Y_hat, Y_hat_max.reshape(-1).detach().numpy()
         
-    def evaluate(self, dataset, alpha):
-        
-        Y_hat, Y_hat_max = self.predict(dataset, alpha)
+    def evaluate(self, dataset):
+        Y_hat, Y_hat_max = self.predict(dataset)
         accuracy, ei_disparity = model_performance(dataset.Y.detach().numpy(), dataset.Z.detach().numpy(), Y_hat, Y_hat_max, self.tau)
         
         return accuracy, ei_disparity
