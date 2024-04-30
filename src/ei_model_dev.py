@@ -52,38 +52,39 @@ class FairBatch(EIModel):
      
         loss_fn = torch.nn.BCELoss(reduction = 'mean')
         
-        p_losses = [] # total prediction loss
-        f_losses = [] # fairness loss
+        pred_losses = [] # total prediction loss
+        fair_losses = [] # fairness loss
         
         accuracies = []
         ei_disparities = []
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
         
-        for epoch in tqdm.trange(n_epochs, desc=f"Training [alpha={alpha:.2f}; lambda={lamb:.2f}]", unit="epochs", colour='#0091ff'):
+        for epoch in tqdm.trange(n_epochs, desc=f"Training [alpha={alpha:.2f}; lambda={lamb:.2f}; delta={self.effort_model.delta:.2f}]", unit="epochs", colour='#0091ff'):
         
-            batch_p_loss = [] # batch prediction loss
-            batch_f_loss = [] # batch fairness loss
+            batch_pred_losses = [] # batch prediction loss
+            batch_fair_losses = [] # batch fairness loss
 
             for _, (X_batch, Y_batch, Z_batch) in enumerate(train_loader):
                 Y_hat = self.model(X_batch)
                 
-                loss = 0
+                batch_loss = 0
 
                 # prediction loss
-                p_loss = loss_fn(Y_hat.reshape(-1), Y_batch)
-                loss += (1-lamb)*p_loss
+                batch_pred_loss = loss_fn(Y_hat.reshape(-1), Y_batch)
+                batch_loss += (1-lamb)*batch_pred_loss
 
                 # fairness loss
-                f_loss = 0
+                batch_fair_loss = 0
                 # EI_Constraint
                 if torch.sum(Y_hat<self.tau) > 0:
                     X_batch_e = X_batch[(Y_hat<self.tau).reshape(-1),:]
                     Z_batch_e = Z_batch[(Y_hat<self.tau).reshape(-1)]
                    
+                    pga_fair_loss = 0
                     # PGA
                     if alpha > 0: 
                         model_adv = deepcopy(self.model)
-                        optimizer_adv = optim.Adamax(model_adv.parameters(), lr=1e-3, maximize=True, weight_decay=1e-4)
+                        optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-3)
                         pga_loss_fn = torch.nn.BCELoss(reduction = 'mean')
                         
                         for module in self.model.layers:
@@ -95,7 +96,7 @@ class FairBatch(EIModel):
                                 bias_max = module.bias.data.item() + alpha
                         
                         for _ in range(20):
-                            pga_f_loss = 0
+                            pga_fair_loss = 0
                             # Effort delta 
                             Y_hat_pga = self.effort_model(model_adv, dataset, X_batch_e)
                             
@@ -107,10 +108,10 @@ class FairBatch(EIModel):
                                 if group_idx.sum() == 0:
                                     continue
                                 pga_loss_z[z] = pga_loss_fn(Y_hat_pga.reshape(-1)[group_idx], torch.ones(group_idx.sum()))
-                                pga_f_loss += torch.abs(pga_loss_z[z] - pga_loss_mean)
+                                pga_fair_loss -= torch.abs(pga_loss_z[z] - pga_loss_mean)
                             
                             optimizer_adv.zero_grad()
-                            pga_f_loss.backward()
+                            pga_fair_loss.backward()
                             optimizer_adv.step()
                             
                             for module in model_adv.layers:
@@ -125,6 +126,7 @@ class FairBatch(EIModel):
                     else:
                         Y_hat_max = self.effort_model(self.model, dataset, X_batch_e)
                     
+                    # print(f'PGA Fair Loss: {pga_fair_loss:.3f}')
                     loss_mean = loss_fn(Y_hat_max.reshape(-1), torch.ones(len(Y_hat_max)))
                     loss_z = torch.zeros(len(sensitive_attrs))
                     for z in sensitive_attrs:
@@ -133,24 +135,24 @@ class FairBatch(EIModel):
                         if group_idx.sum() == 0:
                             continue
                         loss_z[z] = loss_fn(Y_hat_max.reshape(-1)[group_idx], torch.ones(group_idx.sum()))
-                        f_loss += torch.abs(loss_z[z] - loss_mean)
+                        batch_fair_loss += torch.abs(loss_z[z] - loss_mean)
 
-                loss += lamb*f_loss
+                batch_loss += lamb*batch_fair_loss
                 
                 optimizer.zero_grad()
-                if (torch.isnan(loss)).any():
+                if (torch.isnan(batch_loss)).any():
                     continue
-                loss.backward()
+                batch_loss.backward()
                 optimizer.step()
 
-                batch_p_loss.append(p_loss.item())
-                if hasattr(f_loss,'item'):
-                    batch_f_loss.append(f_loss.item())
+                batch_pred_losses.append(batch_pred_loss.item())
+                if hasattr(batch_fair_loss,'item'):
+                    batch_fair_losses.append(batch_fair_loss.item())
                 else:
-                    batch_f_loss.append(f_loss)
+                    batch_fair_losses.append(batch_fair_loss)
             
-            p_losses.append(np.mean(batch_p_loss))
-            f_losses.append(np.mean(batch_f_loss))
+            pred_losses.append(np.mean(batch_pred_losses))
+            fair_losses.append(np.mean(batch_fair_losses))
 
             Y_hat_train = self.model(dataset.X).reshape(-1).detach().numpy()
             Y_hat_max_train = self.effort_model(self.model, dataset, dataset.X)
@@ -162,11 +164,12 @@ class FairBatch(EIModel):
             ei_disparities.append(ei_disparity)
 
         self.train_history.accuracy = accuracies
-        self.train_history.p_loss = p_losses
-        self.train_history.f_loss = f_losses
+        self.train_history.p_loss = pred_losses
+        self.train_history.f_loss = fair_losses
         self.train_history.ei_disparity = ei_disparities
+        return self
     
-    def predict(self, dataset, alpha, sensitive_attrs):
+    def predict(self, dataset, alpha):
         Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
         if alpha > 0: 
             model_adv = deepcopy(self.model)
@@ -183,12 +186,11 @@ class FairBatch(EIModel):
             
             for _ in range(20):
                 pga_f_loss = 0
-                # Effort delta 
                 Y_hat_pga = self.effort_model(model_adv, dataset, dataset.X)
                 
                 pga_loss_mean = loss_fn(Y_hat_pga.reshape(-1), torch.ones(len(Y_hat_pga)))
-                pga_loss_z = torch.zeros(len(sensitive_attrs))
-                for z in sensitive_attrs:
+                pga_loss_z = torch.zeros(len(dataset.sensitive_attrs))
+                for z in dataset.sensitive_attrs:
                     z = int(z)
                     group_idx = (dataset.Z == z)
                     if group_idx.sum() == 0:
@@ -208,7 +210,7 @@ class FairBatch(EIModel):
                         with torch.no_grad():
                             module.bias.data = module.bias.data.clamp(bias_min, bias_max)
 
-            Y_hat_max = Y_hat_pga.clone().detach()
+            Y_hat_max = Y_hat_pga.clone()
         else:
             Y_hat_max = self.effort_model(self.model, dataset, dataset.X)
         
@@ -216,19 +218,7 @@ class FairBatch(EIModel):
     
     def evaluate(self, dataset, alpha):
         
-        if alpha != 0.:
-            model_adv = deepcopy(self.model)
-            for module in model_adv.layers:
-                if hasattr(module, 'weight'):
-                    module.weight.data += alpha
-                if hasattr(module, 'bias'):
-                    module.bias.data += alpha
-        else:
-            model_adv = self.model
-
-        Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
-        Y_hat_max = self.effort_model(model_adv, dataset, dataset.X)
-        Y_hat_max = Y_hat_max.reshape(-1).detach().numpy()
+        Y_hat, Y_hat_max = self.predict(dataset, alpha)
         accuracy, ei_disparity = model_performance(dataset.Y.detach().numpy(), dataset.Z.detach().numpy(), Y_hat, Y_hat_max, self.tau)
         
         return accuracy, ei_disparity

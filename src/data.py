@@ -4,6 +4,14 @@ import pandas as pd
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 
+
+def df_to_array(*dfs):
+    return tuple(map(lambda df: df.to_numpy(dtype=np.float64), dfs))
+
+def df_to_tensor(*dfs):
+    return tuple(map(torch.FloatTensor, dfs))
+
+
 class FairnessDataset(Dataset):
     def __init__(self, X, Y, Z, imp_feats) -> None:
         self.X = X
@@ -13,6 +21,7 @@ class FairnessDataset(Dataset):
         self.C_index = imp_feats['C_index']
         self.C_min = imp_feats['C_min']
         self.C_max = imp_feats['C_max']
+        self.sensitive_attrs = sorted(list(set(self.Z)))
     
     def __len__(self):
         return len(self.Y)
@@ -20,12 +29,6 @@ class FairnessDataset(Dataset):
     def __getitem__(self, index):
         x, y, z = self.X[index], self.Y[index], self.Z[index]
         return x, y, z
-
-def df_to_array(*dfs):
-    return tuple(map(lambda df: df.to_numpy(dtype=np.float64), dfs))
-
-def df_to_tensor(*dfs):
-    return tuple(map(torch.FloatTensor, dfs))
 
 
 class SyntheticDataset():

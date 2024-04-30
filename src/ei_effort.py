@@ -58,7 +58,7 @@ class Optimal_Effort(Effort):
         super().__init__(delta)
         self.norm = norm
         
-    def __call__(self, model, dataset, x):
+    def __call__(self, model, dataset: FairnessDataset, x: torch.Tensor):
         efforts = Variable(torch.zeros(x.shape), requires_grad = True)
     
         improvable_indices = []
