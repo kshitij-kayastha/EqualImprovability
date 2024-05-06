@@ -2,6 +2,8 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
+from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
 
@@ -21,7 +23,7 @@ class FairnessDataset(Dataset):
         self.C_index = imp_feats['C_index']
         self.C_min = imp_feats['C_min']
         self.C_max = imp_feats['C_max']
-        self.sensitive_attrs = sorted(list(set(self.Z)))
+        self.sensitive_attrs = sorted(list(set(self.Z.numpy())))
     
     def __len__(self):
         return len(self.Y)
@@ -123,3 +125,87 @@ class SyntheticDataset():
         return train_tensors, val_tensors, test_tensors
 
     
+class GermanDataset():
+    def __init__(self):
+
+        # data = pd.read_csv('../data/german.data', header = None, delim_whitespace = True)
+        data = pd.read_csv('../data/german.data', header = None, sep = '\s+')
+        self.num_samples = len(data)
+        
+        data.columns=['Existing-Account-Status','Month-Duration','Credit-History','Purpose','Credit-Amount','Saving-Account','Present-Employment','Instalment-Rate','Sex','Guarantors','Residence','Property','Age','Installment','Housing','Existing-Credits','Job','Num-People','Telephone','Foreign-Worker','Status']
+        cat_feats=['Credit-History','Purpose','Present-Employment', 'Sex','Guarantors','Property','Installment','Telephone','Foreign-Worker','Existing-Account-Status','Saving-Account','Housing','Job']
+        num_feats =['Month-Duration','Credit-Amount']
+        
+        label_encoder = LabelEncoder()
+        for x in cat_feats:
+            data[x]=label_encoder.fit_transform(data[x])
+            data[x].unique()
+
+        data.loc[data['Age']<=30,'Age'] = 0
+        data.loc[data['Age']>30,'Age'] = 1
+
+        data=data.rename(columns = {'Age':'z'})
+
+        data.loc[data['Status']==2,'Status'] = 0
+        data=data.rename(columns = {'Status':'y'})
+        
+        self.Z = data['z']
+        self.Y = data['y']
+        self.X = data.drop(labels=['z','y'], axis=1)
+        self.XZ = pd.concat([self.X, self.Z], axis=1)
+
+        self.sensitive_attrs = sorted(list(set(self.Z)))
+
+        self.set_improvable_features()
+        
+    def set_improvable_features(self):
+        self.imp_feats = {
+            'U_index': np.setdiff1d(np.arange(20),[0,5,14,16]),
+            'C_index': [0,3,7,9],
+            'C_min': [0,0,0,0],
+            'C_max': [3,4,2,3]
+        }
+
+    def split_data(self, fold):
+        n, m = 5, self.num_samples
+        fold = fold % 5
+        x_chunks, y_chunks, z_chunks, xz_chunks = [], [], [], []
+        
+        for i in range(n):
+            start = int(i/n * m)
+            end = int((i+1)/n * m)
+            x_chunks.append(self.X.iloc[start:end])
+            y_chunks.append(self.Y.iloc[start:end])
+            z_chunks.append(self.Z.iloc[start:end])
+            xz_chunks.append(self.XZ.iloc[start:end])
+            
+        self.X_test, self.Y_test, self.Z_test, self.XZ_test = x_chunks.pop(fold), y_chunks.pop(fold), z_chunks.pop(fold), xz_chunks.pop(fold)
+        train_dataset = pd.concat(x_chunks), pd.concat(y_chunks), pd.concat(z_chunks), pd.concat(xz_chunks)
+        
+        self.X_train, self.X_val, self.Y_train, self.Y_val, self.Z_train, self.Z_val, self.XZ_train, self.XZ_val = train_test_split(*train_dataset, train_size=0.8, random_state=fold)
+        
+        return self
+               
+    def numpy(self, fold=0, z_blind=True):
+        self.split_data(fold)
+        if z_blind:
+            train_arrays = df_to_array(self.X_train, self.Y_train, self.Z_train)
+            val_arrays = df_to_array(self.X_val, self.Y_val, self.Z_val)
+            test_arrays = df_to_array(self.X_test, self.Y_test, self.Z_test)
+        else:
+            train_arrays = df_to_array(self.XZ_train, self.Y_train, self.Z_train)
+            val_arrays = df_to_array(self.XZ_val, self.Y_val, self.Z_val)
+            test_arrays = df_to_array(self.XZ_test, self.Y_test, self.Z_test)
+        return train_arrays, val_arrays, test_arrays
+               
+    def tensor(self, fold=0, z_blind=True):
+        self.split_data(fold)
+        if z_blind:
+            train_tensors = df_to_tensor(self.X_train.values, self.Y_train.values, self.Z_train.values)
+            val_tensors = df_to_tensor(self.X_val.values, self.Y_val.values, self.Z_val.values)
+            test_tensors = df_to_tensor(self.X_test.values, self.Y_test.values, self.Z_test.values)
+        else:
+            train_tensors = df_to_tensor(self.XZ_train.values, self.Y_train.values, self.Z_train.values)
+            val_tensors = df_to_tensor(self.XZ_val.values, self.Y_val.values, self.Z_val.values)
+            test_tensors = df_to_tensor(self.XZ_test.values, self.Y_test.values, self.Z_test.values)
+        return train_tensors, val_tensors, test_tensors

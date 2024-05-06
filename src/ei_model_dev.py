@@ -79,7 +79,7 @@ class FairBatch(EIModel):
                 if torch.sum(Y_hat<self.tau) > 0:
                     X_batch_e = X_batch[(Y_hat<self.tau).reshape(-1),:]
                     Z_batch_e = Z_batch[(Y_hat<self.tau).reshape(-1)]
-                   
+
                     # PGA
                     if alpha > 0: 
                         model_adv = deepcopy(self.model)
@@ -99,7 +99,7 @@ class FairBatch(EIModel):
                             # Effort delta 
                             Y_hat_pga = self.effort_model(model_adv, dataset, X_batch_e)
                             pga_loss_mean = pga_loss_fn(Y_hat_pga.reshape(-1), torch.ones(len(Y_hat_pga)))
-                            pga_loss_z = torch.zeros(len(sensitive_attrs))
+                            pga_loss_z = torch.zeros(len(dataset.sensitive_attrs))
                             for z in dataset.sensitive_attrs:
                                 z = int(z)
                                 group_idx = (Z_batch_e == z)
@@ -125,8 +125,8 @@ class FairBatch(EIModel):
                         Y_hat_max = self.effort_model(self.model, dataset, X_batch_e)
                     
                     loss_mean = loss_fn(Y_hat_max.reshape(-1), torch.ones(len(Y_hat_max)))
-                    loss_z = torch.zeros(len(sensitive_attrs))
-                    for z in sensitive_attrs:
+                    loss_z = torch.zeros(len(dataset.sensitive_attrs))
+                    for z in dataset.sensitive_attrs:
                         z = int(z)
                         group_idx = (Z_batch_e == z)
                         if group_idx.sum() == 0:
@@ -182,9 +182,9 @@ class FairBatch(EIModel):
                     bias_max = module.bias.data.item() + alpha
             
             for _ in range(self.pga_iter):
-                pga_fair_loss = 0.
                 Y_hat_pga = self.effort_model(model_adv, dataset, dataset.X)
                 
+                pga_fair_loss = 0.
                 pga_loss_mean = pga_loss_fn(Y_hat_pga.reshape(-1), torch.ones(len(Y_hat_pga)))
                 pga_loss_z = torch.zeros(len(dataset.sensitive_attrs))
                 for z in dataset.sensitive_attrs:
@@ -224,7 +224,6 @@ class FairBatch(EIModel):
     
     
 class Covariance(EIModel):
-    
     def __init__(self, model, effort_model: Effort, pga_iter: int = 20, tau: float = 0.5) -> None:
         super(Covariance, self).__init__(model)
         self.effort_model = effort_model # effort model
@@ -265,7 +264,6 @@ class Covariance(EIModel):
                 batch_pred_loss = loss_fn(Y_hat.reshape(-1), Y_batch)
                 batch_loss += (1-lamb)*batch_pred_loss
 
-                # fairness loss
                 batch_fair_loss = 0
                 # EI_Constraint
                 if torch.sum(Y_hat<self.tau) > 0:
