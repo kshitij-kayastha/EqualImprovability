@@ -47,10 +47,8 @@ class PGD_Effort(Effort):
             efforts_update[:,dataset.C_index] = efforts_update[:, dataset.C_index].clamp(C_min, C_max)
             efforts_update[:,dataset.U_index] = torch.zeros(efforts[:, dataset.U_index].shape)
             efforts = Variable(efforts_update, requires_grad = True)
-            
-        y_hat = model(x + efforts)
 
-        return y_hat
+        return x + efforts
     
     
 class Optimal_Effort(Effort):
@@ -85,7 +83,5 @@ class Optimal_Effort(Effort):
         efforts_update[:, dataset.U_index] = torch.zeros(efforts[:, dataset.U_index].shape)
 
         efforts = Variable(efforts_update, requires_grad = True)
-            
-        y_hat = model(x + efforts)
-
-        return y_hat
+        
+        return x + efforts

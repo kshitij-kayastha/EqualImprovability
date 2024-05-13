@@ -33,7 +33,7 @@ def EIDisparity(n_eyz, each_z = False):
         if n_eyz[(1,0,z)] == 0: 
             ei_z = 0
         else:
-            ei_z = n_eyz[(1,0,z)]/(n_eyz[(0,0,z)] + n_eyz[(1,0,z)])
+            ei_z = n_eyz[(1,0,z)] / (n_eyz[(0,0,z)] + n_eyz[(1,0,z)])
         ei.append(abs(ei_z-p10))
     if each_z:
         return ei

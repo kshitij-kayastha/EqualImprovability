@@ -99,7 +99,7 @@ class FairBatch(EIModel):
                             # Effort delta 
                             Y_hat_pga = self.effort_model(model_adv, dataset, X_batch_e)
                             pga_loss_mean = pga_loss_fn(Y_hat_pga.reshape(-1), torch.ones(len(Y_hat_pga)))
-                            pga_loss_z = torch.zeros(len(sensitive_attrs))
+                            pga_loss_z = torch.zeros(len(dataset.sensitive_attrs))
                             for z in dataset.sensitive_attrs:
                                 z = int(z)
                                 group_idx = (Z_batch_e == z)
