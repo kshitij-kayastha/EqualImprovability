@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from data import FairnessDataset
 from ei_effort import Effort
 from ei_utils import model_performance
+from ei_effort import Optimal_Effort, PGD_Effort
 
 
 class EIModel(ABC):
@@ -116,6 +117,8 @@ class FairBatch(EIModel):
                                 pga_fair_loss += torch.abs(pga_loss_z[z] - pga_loss_mean)
                             
                             optimizer_adv.zero_grad()
+                            if (torch.isnan(pga_fair_loss)).any():
+                                continue
                             pga_fair_loss.backward()
                             optimizer_adv.step()
 
@@ -178,7 +181,8 @@ class FairBatch(EIModel):
         self.train_history.ei_disparity = ei_disparities
         return self
     
-    def predict_r(self, dataset, alpha):
+    def predict_r(self, dataset, alpha, delta_prime):
+        self.effort_model.change_delta_prime(delta_prime)
         Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
         model_adv = deepcopy(self.model)
         
@@ -194,7 +198,10 @@ class FairBatch(EIModel):
                     bias_min = module.bias.data.item() - alpha
                     bias_max = module.bias.data.item() + alpha
             
-            for _ in range(self.pga_term):
+            loss_diff = 1
+            pga_fair_loss = torch.tensor(1.)
+            while loss_diff > self.pga_term:
+                prev_loss = pga_fair_loss.clone().detach()
                 X_hat_pga = self.effort_model(model_adv, dataset, dataset.X)
                 Y_hat_pga = model_adv(X_hat_pga)
                 
@@ -210,8 +217,12 @@ class FairBatch(EIModel):
                     pga_fair_loss += torch.abs(pga_loss_z[z] - pga_loss_mean)
                 
                 optimizer_adv.zero_grad()
+                if (torch.isnan(pga_fair_loss)).any():
+                    continue
                 pga_fair_loss.backward()
                 optimizer_adv.step()
+
+                loss_diff = torch.abs(prev_loss - pga_fair_loss)
                 
                 for module in model_adv.layers:
                     if hasattr(module, 'weight'):
@@ -221,7 +232,8 @@ class FairBatch(EIModel):
                         with torch.no_grad():
                             module.bias.data = module.bias.data.clamp(bias_min, bias_max)
 
-            Y_hat_max = Y_hat_pga.clone().detach().requires_grad_()
+            X_hat_max = self.effort_model(model_adv, dataset, dataset.X)
+            Y_hat_max = model_adv(X_hat_max)
         else:
             X_hat_max = self.effort_model(self.model, dataset, dataset.X)
             Y_hat_max = self.model(X_hat_max)
@@ -232,9 +244,9 @@ class FairBatch(EIModel):
     
     def predict(self, dataset, alpha):
         Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
-        
         X_hat_max = self.effort_model(self.model, dataset, dataset.X)
         model_adv = deepcopy(self.model)
+
         if alpha > 0: 
             optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-2, maximize=True)
             pga_loss_fn = torch.nn.BCELoss(reduction = 'mean')
@@ -247,7 +259,10 @@ class FairBatch(EIModel):
                     bias_min = module.bias.data.item() - alpha
                     bias_max = module.bias.data.item() + alpha
             
-            for _ in range(self.pga_term):
+            loss_diff = 1
+            pga_fair_loss = torch.tensor(1.)
+            while loss_diff > self.pga_term:
+                prev_loss = pga_fair_loss.clone().detach()
                 Y_hat_pga = model_adv(X_hat_max)
                 
                 pga_fair_loss = 0.
@@ -262,8 +277,12 @@ class FairBatch(EIModel):
                     pga_fair_loss += torch.abs(pga_loss_z[z] - pga_loss_mean)
                 
                 optimizer_adv.zero_grad()
+                if (torch.isnan(pga_fair_loss)).any():
+                    continue
                 pga_fair_loss.backward()
                 optimizer_adv.step()
+
+                loss_diff = torch.abs(prev_loss - pga_fair_loss)
                 
                 for module in model_adv.layers:
                     if hasattr(module, 'weight'):
@@ -273,6 +292,7 @@ class FairBatch(EIModel):
                         with torch.no_grad():
                             module.bias.data = module.bias.data.clamp(bias_min, bias_max)
 
+            X_hat_max = self.effort_model(model_adv, dataset, dataset.X)
             Y_hat_max = model_adv(X_hat_max)
         else:
             Y_hat_max = self.model(X_hat_max)
