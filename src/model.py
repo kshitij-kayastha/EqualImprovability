@@ -20,9 +20,11 @@ class NN(nn.Module):
         layers = []
         layers.append(nn.Linear(num_features, n_layers[0]))
         layers.append(nn.ReLU())
+        
         for i in range(len(n_layers)-1):
             layers.append(nn.Linear(n_layers[i], n_layers[i+1]))
             layers.append(nn.ReLU())
+        
         layers.append(nn.Linear(n_layers[-1],1))
         layers.append(nn.Sigmoid()) 
         self.layers = nn.Sequential(*layers)

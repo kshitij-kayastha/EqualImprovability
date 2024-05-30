@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 
 def pareto_frontier(A, B):
@@ -50,5 +51,15 @@ def model_performance(Y, Z, Y_hat, Y_hat_max, tau):
         for y in [0,1]:
             for z in [0,1]:
                 n_eyz[(y_max,y,z)] = np.sum((Y_pred_max==y_max)*(Y_pred==y)*(Z==z))
-
+    # print(n_eyz)
     return acc, EIDisparity(n_eyz)
+
+
+def generate_grid(center, width, n=100, ord=None):
+    axes = [np.linspace(center[i]-width, center[i]+width, n).round(4) for i in range(len(center))]
+    grids = np.meshgrid(*axes)
+    points = np.stack([grid.reshape(-1) for grid in grids]).T
+    if ord:
+        mask = np.linalg.norm(points-center, ord=ord, axis=1) <= width
+        points = points[mask]
+    return points
