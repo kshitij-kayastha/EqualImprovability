@@ -16,7 +16,6 @@ from ei_utils import model_performance
 class EIModel(ABC):
     def __init__(self, model: nn.Module) -> None:
         self.model = deepcopy(model)
-        self.model_adv = deepcopy(model)
         self.results = SimpleNamespace()
         self.train_history = SimpleNamespace()
         
@@ -32,19 +31,21 @@ class EIModel(ABC):
         
 
 class FairBatch(EIModel):
-    def __init__(self, model, effort_model: Effort, pga_iter: int = 20, tau: float = 0.5) -> None:
+    def __init__(self, model, effort_model: Effort, pga_term: int | float = 20, tau: float = 0.5) -> None:
         super(FairBatch, self).__init__(model)
         self.effort_model = effort_model # effort model
-        self.pga_iter = pga_iter 
+        self.model_adv = None
+        self.model_adv_r = None
+        self.pga_term = pga_term 
         self.tau = tau # threshold
         
     def train(self, 
               dataset: FairnessDataset, 
               lamb: float, 
-              alpha: float,
-              lr=1e-2, 
-              n_epochs=100, 
-              batch_size=1024, 
+              alpha: float = 0.,
+              lr : float = 1e-2, 
+              n_epochs: int = 100, 
+              batch_size: int = 1024, 
               ):
         
         generator = torch.Generator().manual_seed(0)
@@ -79,7 +80,7 @@ class FairBatch(EIModel):
                 if torch.sum(Y_hat<self.tau) > 0:
                     X_batch_e = X_batch[(Y_hat<self.tau).reshape(-1),:]
                     Z_batch_e = Z_batch[(Y_hat<self.tau).reshape(-1)]
-                   
+
                     # PGA
                     if alpha > 0: 
                         model_adv = deepcopy(self.model)
@@ -94,10 +95,11 @@ class FairBatch(EIModel):
                                 bias_min = module.bias.data.item() - alpha
                                 bias_max = module.bias.data.item() + alpha
                         
-                        for _ in range(self.pga_iter):
+                        for _ in range(self.pga_term):
                             pga_fair_loss = 0.
                             # Effort delta 
-                            Y_hat_pga = self.effort_model(model_adv, dataset, X_batch_e)
+                            X_hat_pga = self.effort_model(model_adv, dataset, X_batch_e)
+                            Y_hat_pga = model_adv(X_hat_pga)
                             pga_loss_mean = pga_loss_fn(Y_hat_pga.reshape(-1), torch.ones(len(Y_hat_pga)))
                             pga_loss_z = torch.zeros(len(dataset.sensitive_attrs))
                             for z in dataset.sensitive_attrs:
@@ -122,7 +124,8 @@ class FairBatch(EIModel):
 
                         Y_hat_max = Y_hat_pga.clone().detach().requires_grad_()
                     else:
-                        Y_hat_max = self.effort_model(self.model, dataset, X_batch_e)
+                        X_hat_max = self.effort_model(self.model, dataset, X_batch_e)
+                        Y_hat_max = self.model(X_hat_max)
                     
                     loss_mean = loss_fn(Y_hat_max.reshape(-1), torch.ones(len(Y_hat_max)))
                     loss_z = torch.zeros(len(dataset.sensitive_attrs))
@@ -152,7 +155,8 @@ class FairBatch(EIModel):
             fair_losses.append(np.mean(batch_fair_losses))
 
             Y_hat_train = self.model(dataset.X).reshape(-1).detach().numpy()
-            Y_hat_max_train = self.effort_model(self.model, dataset, dataset.X)
+            X_hat_max_train = self.effort_model(self.model, dataset, dataset.X)
+            Y_hat_max_train = self.model(X_hat_max_train)
             Y_hat_max_train = Y_hat_max_train.reshape(-1).detach().numpy()
             
             accuracy, ei_disparity = model_performance(dataset.Y.detach().numpy(), dataset.Z.detach().numpy(), Y_hat_train, Y_hat_max_train, self.tau)
@@ -166,9 +170,10 @@ class FairBatch(EIModel):
         self.train_history.ei_disparity = ei_disparities
         return self
     
-    def predict(self, dataset, alpha):
+    def predict_r(self, dataset, alpha):
         Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
         model_adv = deepcopy(self.model)
+        
         if alpha > 0: 
             optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-2, maximize=True)
             pga_loss_fn = torch.nn.BCELoss(reduction = 'mean')
@@ -181,10 +186,11 @@ class FairBatch(EIModel):
                     bias_min = module.bias.data.item() - alpha
                     bias_max = module.bias.data.item() + alpha
             
-            for _ in range(self.pga_iter):
-                pga_fair_loss = 0.
-                Y_hat_pga = self.effort_model(model_adv, dataset, dataset.X)
+            for _ in range(self.pga_term):
+                X_hat_pga = self.effort_model(model_adv, dataset, dataset.X)
+                Y_hat_pga = model_adv(X_hat_pga)
                 
+                pga_fair_loss = 0.
                 pga_loss_mean = pga_loss_fn(Y_hat_pga.reshape(-1), torch.ones(len(Y_hat_pga)))
                 pga_loss_z = torch.zeros(len(dataset.sensitive_attrs))
                 for z in dataset.sensitive_attrs:
@@ -207,9 +213,63 @@ class FairBatch(EIModel):
                         with torch.no_grad():
                             module.bias.data = module.bias.data.clamp(bias_min, bias_max)
 
-            Y_hat_max = Y_hat_pga.clone().detach()
+            Y_hat_max = Y_hat_pga.clone().detach().requires_grad_()
         else:
-            Y_hat_max = self.effort_model(self.model, dataset, dataset.X)
+            X_hat_max = self.effort_model(self.model, dataset, dataset.X)
+            Y_hat_max = self.model(X_hat_max)
+        
+        self.model_adv_r = model_adv
+        
+        return Y_hat, Y_hat_max.reshape(-1).detach().numpy()
+    
+    def predict(self, dataset, alpha):
+        Y_hat = self.model(dataset.X).reshape(-1).detach().numpy()
+        
+        X_hat_max = self.effort_model(self.model, dataset, dataset.X)
+        model_adv = deepcopy(self.model)
+        if alpha > 0: 
+            optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-2, maximize=True)
+            pga_loss_fn = torch.nn.BCELoss(reduction = 'mean')
+            
+            for module in model_adv.layers:
+                if hasattr(module, 'weight'):
+                    weight_min = module.weight.data - alpha
+                    weight_max = module.weight.data + alpha
+                if hasattr(module, 'bias'):
+                    bias_min = module.bias.data.item() - alpha
+                    bias_max = module.bias.data.item() + alpha
+            
+            for _ in range(self.pga_term):
+                Y_hat_pga = model_adv(X_hat_max)
+                
+                pga_fair_loss = 0.
+                pga_loss_mean = pga_loss_fn(Y_hat_pga.reshape(-1), torch.ones(len(Y_hat_pga)))
+                pga_loss_z = torch.zeros(len(dataset.sensitive_attrs))
+                for z in dataset.sensitive_attrs:
+                    z = int(z)
+                    group_idx = (dataset.Z == z)
+                    if group_idx.sum() == 0:
+                        continue
+                    pga_loss_z[z] = pga_loss_fn(Y_hat_pga.reshape(-1)[group_idx], torch.ones(group_idx.sum()))
+                    pga_fair_loss += torch.abs(pga_loss_z[z] - pga_loss_mean)
+                
+                optimizer_adv.zero_grad()
+                pga_fair_loss.backward()
+                optimizer_adv.step()
+                
+                for module in model_adv.layers:
+                    if hasattr(module, 'weight'):
+                        with torch.no_grad():
+                            module.weight.data = module.weight.data.clamp(weight_min, weight_max)
+                    if hasattr(module, 'bias'):
+                        with torch.no_grad():
+                            module.bias.data = module.bias.data.clamp(bias_min, bias_max)
+
+            Y_hat_max = model_adv(X_hat_max)
+        else:
+            Y_hat_max = self.model(X_hat_max)
+        
+        self.model_adv = model_adv
         
         return Y_hat, Y_hat_max.reshape(-1).detach().numpy()
     
@@ -224,7 +284,6 @@ class FairBatch(EIModel):
     
     
 class Covariance(EIModel):
-    
     def __init__(self, model, effort_model: Effort, pga_iter: int = 20, tau: float = 0.5) -> None:
         super(Covariance, self).__init__(model)
         self.effort_model = effort_model # effort model
@@ -265,7 +324,6 @@ class Covariance(EIModel):
                 batch_pred_loss = loss_fn(Y_hat.reshape(-1), Y_batch)
                 batch_loss += (1-lamb)*batch_pred_loss
 
-                # fairness loss
                 batch_fair_loss = 0
                 # EI_Constraint
                 if torch.sum(Y_hat<self.tau) > 0:

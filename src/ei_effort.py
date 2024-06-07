@@ -48,7 +48,7 @@ class PGD_Effort(Effort):
             efforts_update[:,dataset.U_index] = torch.zeros(efforts[:, dataset.U_index].shape)
             efforts = Variable(efforts_update, requires_grad = True)
 
-        return x + efforts
+        return (x + efforts).detach()
     
     
 class Optimal_Effort(Effort):

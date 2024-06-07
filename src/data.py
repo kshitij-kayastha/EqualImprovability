@@ -38,7 +38,6 @@ class SyntheticDataset():
         self.num_samples = num_samples
         self.z1_mean = z1_mean
         self.z2_mean = z2_mean
-        self.seed = seed
         
         rng = np.random.default_rng(seed)
         
@@ -126,28 +125,29 @@ class SyntheticDataset():
 
     
 class GermanDataset():
-    def __init__(self):
+    def __init__(self, seed: int | None = None):
 
         # data = pd.read_csv('../data/german.data', header = None, delim_whitespace = True)
-        data = pd.read_csv('../data/german.data', header = None, sep = '\s+')
+        data = pd.read_csv('../data/german.data', header = None, sep = '\s+').sample(frac=1, random_state=seed)
         self.num_samples = len(data)
         
         data.columns=['Existing-Account-Status','Month-Duration','Credit-History','Purpose','Credit-Amount','Saving-Account','Present-Employment','Instalment-Rate','Sex','Guarantors','Residence','Property','Age','Installment','Housing','Existing-Credits','Job','Num-People','Telephone','Foreign-Worker','Status']
-        cat_feats=['Credit-History','Purpose','Present-Employment', 'Sex','Guarantors','Property','Installment','Telephone','Foreign-Worker','Existing-Account-Status','Saving-Account','Housing','Job']
-        num_feats =['Month-Duration','Credit-Amount']
+        self.cat_feats=['Credit-History','Purpose','Present-Employment', 'Sex','Guarantors','Property','Installment','Telephone','Foreign-Worker','Existing-Account-Status','Saving-Account','Housing','Job']
+        self.num_feats =['Month-Duration','Credit-Amount']
         
         label_encoder = LabelEncoder()
-        for x in cat_feats:
+        for x in self.cat_feats:
             data[x]=label_encoder.fit_transform(data[x])
             data[x].unique()
 
         data.loc[data['Age']<=30,'Age'] = 0
         data.loc[data['Age']>30,'Age'] = 1
-
         data=data.rename(columns = {'Age':'z'})
 
         data.loc[data['Status']==2,'Status'] = 0
         data=data.rename(columns = {'Status':'y'})
+        
+        data[self.num_feats] = data[self.num_feats].astype(float)
         
         self.Z = data['z']
         self.Y = data['y']
@@ -181,6 +181,13 @@ class GermanDataset():
             
         self.X_test, self.Y_test, self.Z_test, self.XZ_test = x_chunks.pop(fold), y_chunks.pop(fold), z_chunks.pop(fold), xz_chunks.pop(fold)
         train_dataset = pd.concat(x_chunks), pd.concat(y_chunks), pd.concat(z_chunks), pd.concat(xz_chunks)
+        
+        scaler = StandardScaler()
+        train_dataset[0].loc[:, self.num_feats] = scaler.fit_transform(train_dataset[0][self.num_feats])
+        train_dataset[-1].loc[:, self.num_feats] = scaler.transform(train_dataset[-1][self.num_feats])
+        self.X_test.loc[:, self.num_feats] = scaler.transform(self.X_test[self.num_feats])
+        self.XZ_test.loc[:, self.num_feats] = scaler.transform(self.XZ_test[self.num_feats])
+        
         
         self.X_train, self.X_val, self.Y_train, self.Y_val, self.Z_train, self.Z_val, self.XZ_train, self.XZ_val = train_test_split(*train_dataset, train_size=0.8, random_state=fold)
         

@@ -42,8 +42,8 @@ def EIDisparity(n_eyz, each_z = False):
         return max(ei)
 
 def model_performance(Y, Z, Y_hat, Y_hat_max, tau):
-    Y_pred = (Y_hat>tau)*1
-    Y_pred_max = (Y_hat_max>tau)*1
+    Y_pred = (Y_hat>=tau)*1
+    Y_pred_max = (Y_hat_max>=tau)*1
     acc = np.mean(Y==Y_pred)
     
     n_eyz = {}
@@ -56,10 +56,10 @@ def model_performance(Y, Z, Y_hat, Y_hat_max, tau):
 
 
 def generate_grid(center, width, n=100, ord=None):
-    axes = [np.linspace(center[i]-width, center[i]+width, n).round(4) for i in range(len(center))]
+    axes = [np.linspace(center[i]-width, center[i]+width, n) for i in range(len(center))]
     grids = np.meshgrid(*axes)
     points = np.stack([grid.reshape(-1) for grid in grids]).T
     if ord:
-        mask = np.linalg.norm(points-center, ord=ord, axis=1) <= width
+        mask = np.linalg.norm(points-center, ord=ord, axis=1) <= (width+1e-5)
         points = points[mask]
     return points
