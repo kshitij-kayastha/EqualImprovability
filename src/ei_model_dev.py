@@ -25,7 +25,10 @@ class EIModel(ABC):
     def get_model(self):
         return self.model
 
-        
+
+
+
+
 
 class FairBatch(EIModel):
     def __init__(self, model: nn.Module, effort_model: Effort, tau: float = 0.5) -> None:
@@ -189,9 +192,11 @@ class Covariance(EIModel):
     def train(self, 
               dataset: FairnessDataset, 
               lamb: float, 
+              alpha: float = 0.,
               lr: float = 1e-2, 
               n_epochs: int = 100, 
               batch_size: int = 1024, 
+              abstol: float = 1e-7
               ):
         generator = torch.Generator().manual_seed(0)
         train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, generator=generator)

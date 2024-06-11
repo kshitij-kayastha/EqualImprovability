@@ -188,7 +188,6 @@ class GermanDataset():
         self.X_test.loc[:, self.num_feats] = scaler.transform(self.X_test[self.num_feats])
         self.XZ_test.loc[:, self.num_feats] = scaler.transform(self.XZ_test[self.num_feats])
         
-        
         self.X_train, self.X_val, self.Y_train, self.Y_val, self.Z_train, self.Z_val, self.XZ_train, self.XZ_val = train_test_split(*train_dataset, train_size=0.8, random_state=fold)
         
         return self
