@@ -15,7 +15,7 @@ from ei_utils import model_performance
 
 
 def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable):
-    proxy_val = 0.
+    proxy_val = torch.tensor(0.)
     loss_mean = loss_fn(Y_hat_max, torch.ones(len(Y_hat_max)))
     loss_z = torch.zeros(len(torch.unique(Z)))
     for z in torch.unique(Z):
@@ -23,7 +23,7 @@ def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable
         group_idx = (Z == z)
         if group_idx.sum() == 0:
             continue
-        loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
+        loss_z[z] = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
         proxy_val += torch.abs(loss_z[z]-loss_mean)
     return proxy_val
 
@@ -98,7 +98,8 @@ class EIModel():
                         loss_diff = 1.
                         pga_fair_loss = torch.tensor(0.)
                         
-                        while loss_diff > abstol:
+                        # while loss_diff > abstol:
+                        for _ in range(20):
                             prev_loss = pga_fair_loss.clone().detach()
                             X_hat_max_pga = self.effort(model_adv, dataset, X_batch_e)
                             Y_hat_max_pga = model_adv(X_hat_max_pga).reshape(-1)
@@ -118,7 +119,7 @@ class EIModel():
                                     module.bias.data = module.bias.data.clamp(bias_min, bias_max)
                         
                         X_hat_max = self.effort(model_adv, dataset, X_batch_e)
-                        Y_hat_max = self.model(X_hat_max).reshape(-1)  
+                        Y_hat_max = self.model(X_hat_max).reshape(-1)
                     
                     batch_fair_loss = self.proxy(Z_batch_e, Y_hat_max, loss_fn)
                 
