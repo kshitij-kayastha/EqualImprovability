@@ -78,8 +78,9 @@ class EIModel():
                     X_batch_e = X_batch[(Y_hat<self.tau), :]
                     Z_batch_e = Z_batch[(Y_hat<self.tau)]
                     
+                    X_hat_max = self.effort(self.model, dataset, X_batch_e)
+                    
                     if alpha == 0:
-                        X_hat_max = self.effort(self.model, dataset, X_batch_e)
                         Y_hat_max = self.model(X_hat_max).reshape(-1)
                     # PGA
                     else:
@@ -98,11 +99,11 @@ class EIModel():
                         loss_diff = 1.
                         pga_fair_loss = torch.tensor(0.)
                         
-                        # while loss_diff > abstol:
-                        for _ in range(20):
+                        while loss_diff > abstol:
+                        # for _ in range(20):
                             prev_loss = pga_fair_loss.clone().detach()
-                            X_hat_max_pga = self.effort(model_adv, dataset, X_batch_e)
-                            Y_hat_max_pga = model_adv(X_hat_max_pga).reshape(-1)
+                            
+                            Y_hat_max_pga = model_adv(X_hat_max).reshape(-1)
             
                             pga_fair_loss = self.proxy(Z_batch_e, Y_hat_max_pga, pga_loss_fn)
             
@@ -118,8 +119,7 @@ class EIModel():
                                 if hasattr(module, 'bias'):
                                     module.bias.data = module.bias.data.clamp(bias_min, bias_max)
                         
-                        X_hat_max = self.effort(model_adv, dataset, X_batch_e)
-                        Y_hat_max = self.model(X_hat_max).reshape(-1)
+                        Y_hat_max = model_adv(X_hat_max).reshape(-1)
                     
                     batch_fair_loss = self.proxy(Z_batch_e, Y_hat_max, loss_fn)
                 
@@ -170,6 +170,7 @@ class EIModel():
         
         model_adv = deepcopy(self.model)
         optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-3, maximize=True)
+        pga_loss_fn = torch.nn.BCELoss(reduction='mean')
         
         for module in model_adv.layers:
             if hasattr(module, 'weight'):
@@ -185,7 +186,7 @@ class EIModel():
             prev_loss = fair_loss.clone().detach()
             Y_hat_max = model_adv(X_hat_max).reshape(-1)
             
-            fair_loss = self.proxy(Z_e, Y_hat_max, )
+            fair_loss = self.proxy(Z_e, Y_hat_max, pga_loss_fn)
             
             optimizer_adv.zero_grad()
             fair_loss.backward()
