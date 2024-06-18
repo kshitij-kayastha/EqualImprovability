@@ -220,12 +220,13 @@ class GermanDataset():
     
 class IncomeDataset():
     def __init__(self, seed: int | None = None) -> None:
-        datasource = ACSDataSource(survey_year='2018', horizon='1-year', survey='person')
+        datasource = ACSDataSource(survey_year='2018', horizon='1-Year', survey='person')
         ca_data = datasource.get_data(states=['CA'], download=True)
         
         ca_features, ca_labels, _ = ACSIncome.df_to_pandas(ca_data)
         ca_features['SEX'] = ca_features['SEX'].map({2.0: 1, 1.0: 0}).astype(int)
         data = pd.concat([ca_features, ca_labels], axis=1)
+        self.num_samples = len(data)
         
         data['PINCP'] = data['PINCP'].map({True: 1, False:0}).astype(int)
         data = data.rename(columns = {'SEX':'z'})
@@ -235,12 +236,10 @@ class IncomeDataset():
         data = pd.get_dummies(data, columns=self.cat_feats)
         data = data.rename(columns = {'PINCP':'y'})
         
-        data[self.num_feats] = data[self.num_feats].astype(float)
-        
-        self.Z = data['z']
-        self.Y = data['y']
-        self.X = data.drop(labels=['z','y'], axis=1)
-        self.XZ = pd.concat([self.X, self.Z], axis=1)
+        self.Z = data['z'].astype(float)
+        self.Y = data['y'].astype(float)
+        self.X = data.drop(labels=['z','y'], axis=1).astype(float)
+        self.XZ = pd.concat([self.X, self.Z], axis=1).astype(float)
 
         self.sensitive_attrs = sorted(list(set(self.Z)))
 

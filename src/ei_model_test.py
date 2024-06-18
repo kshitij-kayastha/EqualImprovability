@@ -14,29 +14,62 @@ from ei_effort import Effort
 from ei_utils import model_performance
 
 
+def CDF_tau(Yhat, h=0.01, tau=0.5):
+    '''
+    Approximation of CDF of Gaussian based on the approximate Q function 
+    '''
+    a = 0.4920
+    b = 0.2887
+    c = 1.1893
+    Q_function = lambda x: torch.exp(-a*x**2 - b*x - c) 
+    m = len(Yhat)
+    Y_tilde = (tau-Yhat)/h
+    sum_ = torch.sum(Q_function(Y_tilde[Y_tilde>0])) \
+           + torch.sum(1-Q_function(torch.abs(Y_tilde[Y_tilde<0]))) \
+           + 0.5*(len(Y_tilde[Y_tilde==0]))
+    return sum_/m
+
 def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable):
     proxy_val = torch.tensor(0.)
     loss_mean = loss_fn(Y_hat_max, torch.ones(len(Y_hat_max)))
-    loss_z = torch.zeros(len(torch.unique(Z)))
     for z in torch.unique(Z):
         z = int(z)
         group_idx = (Z == z)
         if group_idx.sum() == 0:
             continue
-        loss_z[z] = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
-        proxy_val += torch.abs(loss_z[z]-loss_mean)
+        loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
+        proxy_val += torch.abs(loss_z-loss_mean)
     return proxy_val
 
 def covariance_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable = None):
     proxy_val = torch.square(torch.mean((Z-Z.mean())*Y_hat_max))
     return proxy_val
 
+def kde_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable = None):
+    Pr_Ytilde1 = CDF_tau(Y_hat_max.detach(), h, tau)
+    for z in torch.unique(Z):
+        if torch.sum(Z==z)==0:
+            continue
+        Pr_Ytilde1_Z = CDF_tau(Y_hat_max.detach()[Z==z],h,tau)
+        m_z = Z[Z==z].shape[0]
+        m = Z.shape[0]
+
+        Delta_z = Pr_Ytilde1_Z-Pr_Ytilde1
+        Delta_z_grad = torch.dot(phi((tau-Y_hat_max.detach()[Z==z])/h).view(-1), 
+                                    Y_hat_max[Z==z].view(-1))/h/m_z
+        Delta_z_grad -= torch.dot(phi((tau-Y_hat_max.detach())/h).view(-1), 
+                                    Y_hat_max.view(-1))/h/m
+
+        Delta_z_grad *= grad_Huber(Delta_z, delta_huber)
+        f_loss += Delta_z_grad
+
 class EIModel():
-    def __init__(self, model: nn.Module, proxy: Callable, effort: Effort, tau: float = 0.5) -> None:
+    def __init__(self, model: nn.Module, proxy: Callable, effort: Effort, tau: float = 0.5, warm_start: bool = False) -> None:
         self.model = model
         self.proxy = proxy
         self.effort = effort
         self.tau = tau
+        self.warm_start = warm_start
         self.train_history = SimpleNamespace()
         
     def train(self, 
@@ -85,6 +118,13 @@ class EIModel():
                     # PGA
                     else:
                         model_adv = deepcopy(self.model)
+                        if self.warm_start:
+                            for module in model_adv.layers:
+                                if hasattr(module, 'weight'):
+                                    module.weight.data += alpha
+                                if hasattr(module, 'bias'):
+                                    module.bias.data += alpha
+                                
                         optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-3, maximize=True)
                         pga_loss_fn = torch.nn.BCELoss(reduction='mean')
                         
@@ -169,6 +209,12 @@ class EIModel():
         X_hat_max = self.effort(self.model, dataset, X_e)
         
         model_adv = deepcopy(self.model)
+        if self.warm_start:
+            for module in model_adv.layers:
+                if hasattr(module, 'weight'):
+                    module.weight.data += alpha
+                if hasattr(module, 'bias'):
+                    module.bias.data += alpha
         optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-3, maximize=True)
         pga_loss_fn = torch.nn.BCELoss(reduction='mean')
         
