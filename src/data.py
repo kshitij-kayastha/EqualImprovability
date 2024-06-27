@@ -6,13 +6,15 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from folktables import ACSDataSource, ACSIncome
+from abc import ABC, abstractmethod
 
 
 def df_to_array(*dfs):
     return tuple(map(lambda df: df.to_numpy(dtype=np.float64), dfs))
 
 def df_to_tensor(*dfs):
-    return tuple(map(torch.FloatTensor, dfs))
+    # return tuple(map(torch.FloatTensor, dfs))
+    return tuple(map(torch.FloatTensor, map(lambda df: df.to_numpy(dtype=np.float64), dfs)))
 
 
 class FairnessDataset(Dataset):
@@ -34,8 +36,61 @@ class FairnessDataset(Dataset):
         return x, y, z
 
 
-class SyntheticDataset():
+class EIDataset(ABC):
+    def __init__(self, scale: bool) -> None:
+        super().__init__()
+        self.scale = scale
+        
+    @abstractmethod
+    def set_improvable_features(self):
+        pass
+    
+    def split_data(self, fold, z_blind=True):
+        n, m = 5, self.num_samples
+        fold = fold % 5
+        x_chunks, y_chunks, z_chunks = [], [], []
+        
+        for i in range(n):
+            start = int(i/n * m)
+            end = int((i+1)/n * m)
+            x_chunks.append(self.X.copy().iloc[start:end] if z_blind else self.XZ.copy().iloc[start:end])
+            y_chunks.append(self.Y.copy().iloc[start:end])
+            z_chunks.append(self.Z.copy().iloc[start:end])
+            
+        X_test, Y_test, Z_test = x_chunks.pop(fold), y_chunks.pop(fold), z_chunks.pop(fold)
+        train_dataset = pd.concat(x_chunks), pd.concat(y_chunks), pd.concat(z_chunks)
+        
+        if self.scale:
+            scaler = StandardScaler()
+            train_dataset[0].loc[:, self.num_feats] = scaler.fit_transform(train_dataset[0][self.num_feats])
+            X_test.loc[:, self.num_feats] = scaler.transform(X_test[self.num_feats])
+        
+        X_train, X_val, Y_train, Y_val, Z_train, Z_val = train_test_split(*train_dataset, train_size=0.8, random_state=fold)
+        
+        return (X_train, Y_train, Z_train), (X_val, Y_val, Z_val), (X_test, Y_test, Z_test)
+    
+    def numpy(self, fold=0, z_blind=True):
+        train_data, val_data, test_data = self.split_data(fold, z_blind)
+        
+        train_arrays = df_to_array(*train_data)
+        val_arrays = df_to_array(*val_data)
+        test_arrays = df_to_array(*test_data)
+    
+        return train_arrays, val_arrays, test_arrays
+               
+    def tensor(self, fold=0, z_blind=True):
+        train_data, val_data, test_data = self.split_data(fold, z_blind)
+        
+        train_tensors = df_to_tensor(*train_data)
+        val_tensors = df_to_tensor(*val_data)
+        test_tensors = df_to_tensor(*test_data)
+        
+        return train_tensors, val_tensors, test_tensors
+
+
+class SyntheticDataset(EIDataset):
     def __init__(self, num_samples=20000, z1_mean=0.3, z2_mean=0.5, seed=None):
+        super().__init__(False)
         self.num_samples = num_samples
         self.z1_mean = z1_mean
         self.z2_mean = z2_mean
@@ -79,56 +134,11 @@ class SyntheticDataset():
             'C_min': [],
             'C_max': []
         }
-    
-    def split_data(self, fold):
-        n, m = 5, self.num_samples
-        fold = fold % 5
-        x_chunks, y_chunks, z_chunks, xz_chunks = [], [], [], []
-        
-        for i in range(n):
-            start = int(i/n * m)
-            end = int((i+1)/n * m)
-            x_chunks.append(self.X.iloc[start:end])
-            y_chunks.append(self.Y.iloc[start:end])
-            z_chunks.append(self.Z.iloc[start:end])
-            xz_chunks.append(self.XZ.iloc[start:end])
-            
-        self.X_test, self.Y_test, self.Z_test, self.XZ_test = x_chunks.pop(fold), y_chunks.pop(fold), z_chunks.pop(fold), xz_chunks.pop(fold)
-        train_dataset = pd.concat(x_chunks), pd.concat(y_chunks), pd.concat(z_chunks), pd.concat(xz_chunks)
-        
-        self.X_train, self.X_val, self.Y_train, self.Y_val, self.Z_train, self.Z_val, self.XZ_train, self.XZ_val = train_test_split(*train_dataset, train_size=0.8, random_state=fold)
-        
-        return self
-               
-    def numpy(self, fold=0, z_blind=True):
-        self.split_data(fold)
-        if z_blind:
-            train_arrays = df_to_array(self.X_train, self.Y_train, self.Z_train)
-            val_arrays = df_to_array(self.X_val, self.Y_val, self.Z_val)
-            test_arrays = df_to_array(self.X_test, self.Y_test, self.Z_test)
-        else:
-            train_arrays = df_to_array(self.XZ_train, self.Y_train, self.Z_train)
-            val_arrays = df_to_array(self.XZ_val, self.Y_val, self.Z_val)
-            test_arrays = df_to_array(self.XZ_test, self.Y_test, self.Z_test)
-        return train_arrays, val_arrays, test_arrays
-               
-    def tensor(self, fold=0, z_blind=True):
-        self.split_data(fold)
-        if z_blind:
-            train_tensors = df_to_tensor(self.X_train.values, self.Y_train.values, self.Z_train.values)
-            val_tensors = df_to_tensor(self.X_val.values, self.Y_val.values, self.Z_val.values)
-            test_tensors = df_to_tensor(self.X_test.values, self.Y_test.values, self.Z_test.values)
-        else:
-            train_tensors = df_to_tensor(self.XZ_train.values, self.Y_train.values, self.Z_train.values)
-            val_tensors = df_to_tensor(self.XZ_val.values, self.Y_val.values, self.Z_val.values)
-            test_tensors = df_to_tensor(self.XZ_test.values, self.Y_test.values, self.Z_test.values)
-        return train_tensors, val_tensors, test_tensors
 
     
-class GermanDataset():
+class GermanDataset(EIDataset):
     def __init__(self, seed: int | None = None):
-
-        # data = pd.read_csv('../data/german.data', header = None, delim_whitespace = True)
+        super().__init__(True)
         data = pd.read_csv('../data/german.data', header = None, sep = '\s+').sample(frac=1, random_state=seed)
         self.num_samples = len(data)
         
@@ -167,65 +177,16 @@ class GermanDataset():
             'C_max': [3,4,2,3]
         }
 
-    def split_data(self, fold):
-        n, m = 5, self.num_samples
-        fold = fold % 5
-        x_chunks, y_chunks, z_chunks, xz_chunks = [], [], [], []
-        
-        for i in range(n):
-            start = int(i/n * m)
-            end = int((i+1)/n * m)
-            x_chunks.append(self.X.copy().iloc[start:end])
-            y_chunks.append(self.Y.copy().iloc[start:end])
-            z_chunks.append(self.Z.copy().iloc[start:end])
-            xz_chunks.append(self.XZ.copy().iloc[start:end])
-            
-        self.X_test, self.Y_test, self.Z_test, self.XZ_test = x_chunks.pop(fold), y_chunks.pop(fold), z_chunks.pop(fold), xz_chunks.pop(fold)
-        train_dataset = pd.concat(x_chunks), pd.concat(y_chunks), pd.concat(z_chunks), pd.concat(xz_chunks)
-        
-        scaler = StandardScaler()
-        train_dataset[0].loc[:, self.num_feats] = scaler.fit_transform(train_dataset[0][self.num_feats])
-        train_dataset[-1].loc[:, self.num_feats] = scaler.transform(train_dataset[-1][self.num_feats])
-        self.X_test.loc[:, self.num_feats] = scaler.transform(self.X_test[self.num_feats])
-        self.XZ_test.loc[:, self.num_feats] = scaler.transform(self.XZ_test[self.num_feats])
-        
-        self.X_train, self.X_val, self.Y_train, self.Y_val, self.Z_train, self.Z_val, self.XZ_train, self.XZ_val = train_test_split(*train_dataset, train_size=0.8, random_state=fold)
-        
-        return self
-               
-    def numpy(self, fold=0, z_blind=True):
-        self.split_data(fold)
-        if z_blind:
-            train_arrays = df_to_array(self.X_train, self.Y_train, self.Z_train)
-            val_arrays = df_to_array(self.X_val, self.Y_val, self.Z_val)
-            test_arrays = df_to_array(self.X_test, self.Y_test, self.Z_test)
-        else:
-            train_arrays = df_to_array(self.XZ_train, self.Y_train, self.Z_train)
-            val_arrays = df_to_array(self.XZ_val, self.Y_val, self.Z_val)
-            test_arrays = df_to_array(self.XZ_test, self.Y_test, self.Z_test)
-        return train_arrays, val_arrays, test_arrays
-               
-    def tensor(self, fold=0, z_blind=True):
-        self.split_data(fold)
-        if z_blind:
-            train_tensors = df_to_tensor(self.X_train.values, self.Y_train.values, self.Z_train.values)
-            val_tensors = df_to_tensor(self.X_val.values, self.Y_val.values, self.Z_val.values)
-            test_tensors = df_to_tensor(self.X_test.values, self.Y_test.values, self.Z_test.values)
-        else:
-            train_tensors = df_to_tensor(self.XZ_train.values, self.Y_train.values, self.Z_train.values)
-            val_tensors = df_to_tensor(self.XZ_val.values, self.Y_val.values, self.Z_val.values)
-            test_tensors = df_to_tensor(self.XZ_test.values, self.Y_test.values, self.Z_test.values)
-        return train_tensors, val_tensors, test_tensors
     
-    
-class IncomeDataset():
+class IncomeDataset(EIDataset):
     def __init__(self, seed: int | None = None) -> None:
+        super().__init__(True)
         datasource = ACSDataSource(survey_year='2018', horizon='1-Year', survey='person')
         ca_data = datasource.get_data(states=['CA'], download=True)
         
         ca_features, ca_labels, _ = ACSIncome.df_to_pandas(ca_data)
         ca_features['SEX'] = ca_features['SEX'].map({2.0: 1, 1.0: 0}).astype(int)
-        data = pd.concat([ca_features, ca_labels], axis=1)
+        data = pd.concat([ca_features, ca_labels], axis=1).sample(frac=1, random_state=seed)
         self.num_samples = len(data)
         
         data['PINCP'] = data['PINCP'].map({True: 1, False:0}).astype(int)
@@ -252,55 +213,3 @@ class IncomeDataset():
             'C_min': [1],
             'C_max': [24]
         }
-
-    def split_data(self, fold):
-        n, m = 5, self.num_samples
-        fold = fold % 5
-        x_chunks, y_chunks, z_chunks, xz_chunks = [], [], [], []
-        
-        for i in range(n):
-            start = int(i/n * m)
-            end = int((i+1)/n * m)
-            x_chunks.append(self.X.iloc[start:end])
-            y_chunks.append(self.Y.iloc[start:end])
-            z_chunks.append(self.Z.iloc[start:end])
-            xz_chunks.append(self.XZ.iloc[start:end])
-            
-        self.X_test, self.Y_test, self.Z_test, self.XZ_test = x_chunks.pop(fold), y_chunks.pop(fold), z_chunks.pop(fold), xz_chunks.pop(fold)
-        train_dataset = pd.concat(x_chunks), pd.concat(y_chunks), pd.concat(z_chunks), pd.concat(xz_chunks)
-        
-        scaler = StandardScaler()
-        train_dataset[0].loc[:, self.num_feats] = scaler.fit_transform(train_dataset[0][self.num_feats])
-        train_dataset[-1].loc[:, self.num_feats] = scaler.transform(train_dataset[-1][self.num_feats])
-        self.X_test.loc[:, self.num_feats] = scaler.transform(self.X_test[self.num_feats])
-        self.XZ_test.loc[:, self.num_feats] = scaler.transform(self.XZ_test[self.num_feats])
-        
-        self.X_train, self.X_val, self.Y_train, self.Y_val, self.Z_train, self.Z_val, self.XZ_train, self.XZ_val = train_test_split(*train_dataset, train_size=0.8, random_state=fold)
-        
-        return self
-               
-    def numpy(self, fold=0, z_blind=True):
-        self.split_data(fold)
-        if z_blind:
-            train_arrays = df_to_array(self.X_train, self.Y_train, self.Z_train)
-            val_arrays = df_to_array(self.X_val, self.Y_val, self.Z_val)
-            test_arrays = df_to_array(self.X_test, self.Y_test, self.Z_test)
-        else:
-            train_arrays = df_to_array(self.XZ_train, self.Y_train, self.Z_train)
-            val_arrays = df_to_array(self.XZ_val, self.Y_val, self.Z_val)
-            test_arrays = df_to_array(self.XZ_test, self.Y_test, self.Z_test)
-        return train_arrays, val_arrays, test_arrays
-               
-    def tensor(self, fold=0, z_blind=True):
-        self.split_data(fold)
-        if z_blind:
-            train_tensors = df_to_tensor(self.X_train.values, self.Y_train.values, self.Z_train.values)
-            val_tensors = df_to_tensor(self.X_val.values, self.Y_val.values, self.Z_val.values)
-            test_tensors = df_to_tensor(self.X_test.values, self.Y_test.values, self.Z_test.values)
-        else:
-            train_tensors = df_to_tensor(self.XZ_train.values, self.Y_train.values, self.Z_train.values)
-            val_tensors = df_to_tensor(self.XZ_val.values, self.Y_val.values, self.Z_val.values)
-            test_tensors = df_to_tensor(self.XZ_test.values, self.Y_test.values, self.Z_test.values)
-        return train_tensors, val_tensors, test_tensors
-        
-        

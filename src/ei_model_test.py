@@ -14,21 +14,6 @@ from ei_effort import Effort
 from ei_utils import model_performance
 
 
-def CDF_tau(Yhat, h=0.01, tau=0.5):
-    '''
-    Approximation of CDF of Gaussian based on the approximate Q function 
-    '''
-    a = 0.4920
-    b = 0.2887
-    c = 1.1893
-    Q_function = lambda x: torch.exp(-a*x**2 - b*x - c) 
-    m = len(Yhat)
-    Y_tilde = (tau-Yhat)/h
-    sum_ = torch.sum(Q_function(Y_tilde[Y_tilde>0])) \
-           + torch.sum(1-Q_function(torch.abs(Y_tilde[Y_tilde<0]))) \
-           + 0.5*(len(Y_tilde[Y_tilde==0]))
-    return sum_/m
-
 def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable):
     proxy_val = torch.tensor(0.)
     loss_mean = loss_fn(Y_hat_max, torch.ones(len(Y_hat_max)))
@@ -45,23 +30,6 @@ def covariance_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable
     proxy_val = torch.square(torch.mean((Z-Z.mean())*Y_hat_max))
     return proxy_val
 
-def kde_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable = None):
-    Pr_Ytilde1 = CDF_tau(Y_hat_max.detach(), h, tau)
-    for z in torch.unique(Z):
-        if torch.sum(Z==z)==0:
-            continue
-        Pr_Ytilde1_Z = CDF_tau(Y_hat_max.detach()[Z==z],h,tau)
-        m_z = Z[Z==z].shape[0]
-        m = Z.shape[0]
-
-        Delta_z = Pr_Ytilde1_Z-Pr_Ytilde1
-        Delta_z_grad = torch.dot(phi((tau-Y_hat_max.detach()[Z==z])/h).view(-1), 
-                                    Y_hat_max[Z==z].view(-1))/h/m_z
-        Delta_z_grad -= torch.dot(phi((tau-Y_hat_max.detach())/h).view(-1), 
-                                    Y_hat_max.view(-1))/h/m
-
-        Delta_z_grad *= grad_Huber(Delta_z, delta_huber)
-        f_loss += Delta_z_grad
 
 class EIModel():
     def __init__(self, model: nn.Module, proxy: Callable, effort: Effort, tau: float = 0.5, warm_start: bool = False) -> None:
@@ -93,7 +61,7 @@ class EIModel():
         loss_fn = torch.nn.BCELoss(reduction='mean')
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
         
-        for epoch in tqdm.trange(n_epochs, desc=f"{'Robust ' if alpha > 0 else ''}Training [alpha={alpha:.2f}; lambda={lamb:.2f}; delta={self.effort.delta:.2f}]", unit="epochs", colour='#0091ff'):
+        for epoch in tqdm.trange(n_epochs, desc=f"{'Robust ' if alpha > 0 else ''}Training [alpha={alpha:.3f}; lambda={lamb:.3f}; delta={self.effort.delta:.3f}]", unit="epochs", colour='#0091ff'):
             
             batch_pred_losses = []
             batch_fair_losses = []
@@ -231,7 +199,6 @@ class EIModel():
         while loss_diff > abstol:
             prev_loss = fair_loss.clone().detach()
             Y_hat_max = model_adv(X_hat_max).reshape(-1)
-            
             fair_loss = self.proxy(Z_e, Y_hat_max, pga_loss_fn)
             
             optimizer_adv.zero_grad()
