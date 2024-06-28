@@ -14,6 +14,76 @@ from ei_effort import Effort
 from ei_utils import model_performance
 
 
+def fair_batch_proxy(Z: torch.tensor, 
+                     Y_hat_max: torch.tensor,
+                     h: float = 0., 
+                     delta_huber: float = 0., 
+                     loss_fn: Callable = None):
+    proxy_val = torch.tensor(0.)
+    loss_mean = loss_fn(Y_hat_max, torch.ones(len(Y_hat_max)))
+    for z in torch.unique(Z):
+        z = int(z)
+        group_idx = (Z == z)
+        if group_idx.sum() == 0:
+            continue
+        loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
+        proxy_val += torch.abs(loss_z-loss_mean)
+    return proxy_val
+
+def covariance_proxy(Z: torch.tensor, 
+                     Y_hat_max: torch.tensor,
+                     h: float = 0., 
+                     delta_huber: float = 0., 
+                     loss_fn: Callable = None):
+    proxy_val = torch.square(torch.mean((Z-Z.mean())*Y_hat_max))
+    return proxy_val
+
+# def kde_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable = None):
+#     Pr_Ytilde1 = CDF_tau(Y_hat_max.detach(), h, tau)
+#     for z in torch.unique(Z):
+#         if torch.sum(Z==z)==0:
+#             continue
+#         Pr_Ytilde1_Z = CDF_tau(Y_hat_max.detach()[Z==z],h,tau)
+#         m_z = Z[Z==z].shape[0]
+#         m = Z.shape[0]
+
+#         Delta_z = Pr_Ytilde1_Z-Pr_Ytilde1
+#         Delta_z_grad = torch.dot(phi((tau-Y_hat_max.detach()[Z==z])/h).view(-1), 
+#                                     Y_hat_max[Z==z].view(-1))/h/m_z
+#         Delta_z_grad -= torch.dot(phi((tau-Y_hat_max.detach())/h).view(-1), 
+#                                     Y_hat_max.view(-1))/h/m
+
+#         Delta_z_grad *= grad_Huber(Delta_z, delta_huber)
+#         f_loss += Delta_z_grad
+
+def kde_proxy(Z: torch.tensor, 
+              Y_hat_max: torch.tensor, 
+              loss_fn: Callable = None,
+              h: float = 0.01, 
+              delta_huber: float = 0.5, ):
+    
+    tau = 0.5
+    pi = torch.tensor(np.pi) #.to(device)
+    phi = lambda x: torch.exp(-0.5*x**2)/torch.sqrt(2*pi)    
+    proxy_val = torch.tensor(0., requires_grad=True)
+    Pr_Ytilde1 = CDF_tau(Y_hat_max.detach(), h, tau)
+    for z in torch.unique(Z):
+        if torch.sum(Z == z) == 0:
+            continue
+        Pr_Ytilde1_Z = CDF_tau(Y_hat_max.detach()[Z == z], h, tau)
+        m_z = Z[Z == z].shape[0]
+        m = Z.shape[0]
+
+        Delta_z = Pr_Ytilde1_Z - Pr_Ytilde1
+        Delta_z_grad = torch.dot(phi((tau - Y_hat_max.detach()[Z == z]) / h).view(-1), 
+                                 Y_hat_max[Z == z].view(-1)) / h / m_z
+        Delta_z_grad -= torch.dot(phi((tau - Y_hat_max.detach()) / h).view(-1), 
+                                  Y_hat_max.view(-1)) / h / m
+
+        Delta_z_grad *= grad_Huber(Delta_z, delta_huber)
+        proxy_val = proxy_val + Delta_z_grad  # Out-of-place operation
+    return proxy_val
+
 def CDF_tau(Yhat, h=0.01, tau=0.5):
     '''
     Approximation of CDF of Gaussian based on the approximate Q function 
@@ -29,39 +99,16 @@ def CDF_tau(Yhat, h=0.01, tau=0.5):
            + 0.5*(len(Y_tilde[Y_tilde==0]))
     return sum_/m
 
-def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable):
-    proxy_val = torch.tensor(0.)
-    loss_mean = loss_fn(Y_hat_max, torch.ones(len(Y_hat_max)))
-    for z in torch.unique(Z):
-        z = int(z)
-        group_idx = (Z == z)
-        if group_idx.sum() == 0:
-            continue
-        loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
-        proxy_val += torch.abs(loss_z-loss_mean)
-    return proxy_val
-
-def covariance_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable = None):
-    proxy_val = torch.square(torch.mean((Z-Z.mean())*Y_hat_max))
-    return proxy_val
-
-def kde_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable = None):
-    Pr_Ytilde1 = CDF_tau(Y_hat_max.detach(), h, tau)
-    for z in torch.unique(Z):
-        if torch.sum(Z==z)==0:
-            continue
-        Pr_Ytilde1_Z = CDF_tau(Y_hat_max.detach()[Z==z],h,tau)
-        m_z = Z[Z==z].shape[0]
-        m = Z.shape[0]
-
-        Delta_z = Pr_Ytilde1_Z-Pr_Ytilde1
-        Delta_z_grad = torch.dot(phi((tau-Y_hat_max.detach()[Z==z])/h).view(-1), 
-                                    Y_hat_max[Z==z].view(-1))/h/m_z
-        Delta_z_grad -= torch.dot(phi((tau-Y_hat_max.detach())/h).view(-1), 
-                                    Y_hat_max.view(-1))/h/m
-
-        Delta_z_grad *= grad_Huber(Delta_z, delta_huber)
-        f_loss += Delta_z_grad
+def grad_Huber(x, delta):
+    '''
+    Gradient of Huber function implementation
+    '''
+    if x.abs()>delta:
+        if x>0:
+            return delta
+        else:
+            return -delta
+    return x
 
 class EIModel():
     def __init__(self, model: nn.Module, proxy: Callable, effort: Effort, tau: float = 0.5, warm_start: bool = False) -> None:
