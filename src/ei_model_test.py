@@ -24,6 +24,8 @@ def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable
             continue
         loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
         proxy_val += torch.abs(loss_z-loss_mean)
+
+    proxy_val.requires_grad_()
     return proxy_val
 
 def covariance_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable = None):
