@@ -5,30 +5,35 @@ import torch.optim as optim
 import torch.nn as nn
 from types import SimpleNamespace
 from typing import Callable
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from copy import deepcopy
+from abc import ABC, abstractmethod
 
-from data import FairnessDataset
 from ei_effort import Effort
+from data import FairnessDataset
 from ei_utils import model_performance
 
 
-def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable):
-    proxy_val = 0.
+def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor):
+    proxy_val = torch.tensor(0.)
+    loss_fn = torch.nn.BCELoss(reduction='mean')
     loss_mean = loss_fn(Y_hat_max, torch.ones(len(Y_hat_max)))
-    loss_z = torch.zeros(len(torch.unique(Z)))
     for z in torch.unique(Z):
         z = int(z)
         group_idx = (Z == z)
         if group_idx.sum() == 0:
             continue
         loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
-        proxy_val += torch.abs(loss_z[z]-loss_mean)
+        proxy_val += torch.abs(loss_z-loss_mean)
     return proxy_val
 
-def covariance_proxy(Z: torch.tensor, Y_hat_max: torch.tensor, loss_fn: Callable = None):
+def covariance_proxy(Z: torch.tensor, Y_hat_max: torch.tensor):
     proxy_val = torch.square(torch.mean((Z-Z.mean())*Y_hat_max))
     return proxy_val
+
+def kde_proxy():
+    pass
+
 
 class EIModel():
     def __init__(self, model: nn.Module, proxy: Callable, effort: Effort, tau: float = 0.5) -> None:
@@ -44,12 +49,14 @@ class EIModel():
               alpha: float = 0.,
               lr: float = 1e-2,
               n_epochs: int = 100,
-              batch_size: int = 1024
+              batch_size: int = 1024,
+              abstol: float = 1e-7,
               ):
 
         generator = torch.Generator().manual_seed(0)
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, generator=generator)
         
+        losses = []
         pred_losses = []
         fair_losses = []
         accuracies = []
@@ -58,8 +65,9 @@ class EIModel():
         loss_fn = torch.nn.BCELoss(reduction='mean')
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
         
-        for epoch in tqdm.trange(n_epochs, desc=f"Training [alpha={alpha:.2f}; lambda={lamb:.2f}; delta={self.effort.delta:.2f}]", unit="epochs", colour='#0091ff'):
+        for epoch in tqdm.trange(n_epochs, desc=f"Training [alpha={alpha:.3f}; lambda={lamb:.5f}; delta={self.effort.delta:.3f}]", unit="epochs", colour='#0091ff'):
             
+            batch_losses = []
             batch_pred_losses = []
             batch_fair_losses = []
             
@@ -77,11 +85,45 @@ class EIModel():
                     Z_batch_e = Z_batch[(Y_hat<self.tau)]
                     
                     X_hat_max = self.effort(self.model, dataset, X_batch_e)
-                    Y_hat_max = self.model(X_hat_max).reshape(-1)
                     
-                    batch_fair_loss = self.proxy(Z_batch_e, Y_hat_max, loss_fn)
+                    model_adv = deepcopy(self.model)
+                    optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-2)
+                    
+                    for module in self.model.layers:
+                        if hasattr(module, 'weight'):
+                            weight_min = module.weight.data - alpha
+                            weight_max = module.weight.data + alpha
+                        if hasattr(module, 'bias'):
+                            bias_min = module.bias.data - alpha
+                            bias_max = module.bias.data + alpha
+                            
+                    loss_diff = 1.
+                    pga_fair_loss = torch.tensor(0.)
+
+                    # while loss_diff > abstol:
+                    for _ in range(abstol):
+                        prev_loss = pga_fair_loss.clone().detach()
+                        
+                        Y_hat_max_pga = model_adv(X_hat_max).reshape(-1)
+        
+                        pga_fair_loss = -self.proxy(Z_batch_e, Y_hat_max_pga)
+        
+                        optimizer_adv.zero_grad()
+                        pga_fair_loss.backward()
+                        optimizer_adv.step()
+        
+                        loss_diff = (prev_loss - pga_fair_loss).abs()
+                        
+                        for module in model_adv.layers:
+                            if hasattr(module, 'weight'):
+                                module.weight.data = module.weight.data.clamp(weight_min, weight_max)
+                            if hasattr(module, 'bias'):
+                                module.bias.data = module.bias.data.clamp(bias_min, bias_max)
+
+                    Y_hat_max = model_adv(X_hat_max).reshape(-1)
+                    
+                    batch_fair_loss = self.proxy(Z_batch_e, Y_hat_max)
                 
-                # print(batch_loss, batch_fair_loss)
                 batch_loss += lamb*batch_fair_loss
                 
                 optimizer.zero_grad()
@@ -90,12 +132,14 @@ class EIModel():
                 batch_loss.backward()
                 optimizer.step()
         
+                batch_losses.append(batch_loss.item())
                 batch_pred_losses.append(batch_pred_loss.item())
                 if hasattr(batch_fair_loss,'item'):
                     batch_fair_losses.append(batch_fair_loss.item())
                 else:
                     batch_fair_losses.append(batch_fair_loss)
             
+            losses.append(np.mean(batch_losses))
             pred_losses.append(np.mean(batch_pred_losses))
             fair_losses.append(np.mean(batch_fair_losses))
 
@@ -109,26 +153,31 @@ class EIModel():
             ei_disparities.append(ei_disparity)
 
         self.train_history.accuracy = accuracies
-        self.train_history.p_loss = pred_losses
-        self.train_history.f_loss = fair_losses
+        self.train_history.loss = losses
+        self.train_history.pred_loss = pred_losses
+        self.train_history.fair_loss = fair_losses
         self.train_history.ei_disparity = ei_disparities
         return self
         
         
-    def predict(self, 
+    def predict(self,
                 dataset: FairnessDataset,
                 alpha: float,
                 abstol: float = 1e-7
                 ):
         
+        loss_fn = torch.nn.BCELoss(reduction='mean')
+    
         Y_hat = self.model(dataset.X).reshape(-1)
+        pred_loss =  loss_fn(Y_hat, dataset.Y)
+        
         X_e = dataset.X[(Y_hat<self.tau).reshape(-1),:]
         Z_e = dataset.Z[(Y_hat<self.tau)]
         
         X_hat_max = self.effort(self.model, dataset, X_e)
         
         model_adv = deepcopy(self.model)
-        optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-3, maximize=True)
+        optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-2)
         
         for module in model_adv.layers:
             if hasattr(module, 'weight'):
@@ -140,11 +189,11 @@ class EIModel():
         
         loss_diff = 1.
         fair_loss = torch.tensor(0.)
-        while loss_diff > abstol:
+        # while loss_diff > abstol:
+        for _ in range(abstol):
             prev_loss = fair_loss.clone().detach()
             Y_hat_max = model_adv(X_hat_max).reshape(-1)
-            
-            fair_loss = self.proxy(Z_e, Y_hat_max, )
+            fair_loss = -self.proxy(Z_e, Y_hat_max)
             
             optimizer_adv.zero_grad()
             fair_loss.backward()
@@ -157,10 +206,12 @@ class EIModel():
                     module.weight.data = module.weight.data.clamp(weight_min, weight_max)
                 if hasattr(module, 'bias'):
                     module.bias.data = module.bias.data.clamp(bias_min, bias_max)
-                    
+        
         self.model_adv = model_adv
         Y_hat = Y_hat.detach().float().numpy()
         X_hat_max = self.effort(self.model, dataset, dataset.X)
         Y_hat_max = self.model_adv(X_hat_max).reshape(-1).detach().float().numpy()
+        pred_loss = pred_loss.detach().item()
+        fair_loss = -fair_loss.detach().item()
         
-        return Y_hat, Y_hat_max, fair_loss
+        return Y_hat, Y_hat_max, pred_loss, fair_loss

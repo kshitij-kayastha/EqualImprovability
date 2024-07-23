@@ -1,4 +1,3 @@
-import torch
 import numpy as np
 
 def pareto_frontier(A, B):
@@ -12,7 +11,7 @@ def pareto_frontier(A, B):
     return is_dominated    
 
 
-def EIDisparity(n_eyz, each_z = False):
+def ei_disparity(n_eyz, each_z = False):
     '''
     Equal improvability disparity: max_z{|P(yhat_max=1|z=z,y_hat=0)-P(yhat_max=1|y_hat=0)|}
 
@@ -51,8 +50,7 @@ def model_performance(Y, Z, Y_hat, Y_hat_max, tau):
         for y in [0,1]:
             for z in [0,1]:
                 n_eyz[(y_max,y,z)] = np.sum((Y_pred_max==y_max)*(Y_pred==y)*(Z==z))
-    # print(n_eyz)
-    return acc, EIDisparity(n_eyz)
+    return acc, ei_disparity(n_eyz)
 
 
 def generate_grid(center, width, n=100, ord=None):
@@ -62,4 +60,4 @@ def generate_grid(center, width, n=100, ord=None):
     if ord:
         mask = np.linalg.norm(points-center, ord=ord, axis=1) <= (width+1e-5)
         points = points[mask]
-    return points
+    return np.unique(points, axis=0)

@@ -39,6 +39,7 @@ class SyntheticDataset():
         self.num_samples = num_samples
         self.z1_mean = z1_mean
         self.z2_mean = z2_mean
+        self.delta = 0.5
         
         rng = np.random.default_rng(seed)
         
@@ -74,7 +75,7 @@ class SyntheticDataset():
     
     def set_improvable_features(self):
         self.imp_feats = {
-            'U_index': [2],
+            'U_index': [],
             'C_index': [],
             'C_min': [],
             'C_max': []
@@ -180,6 +181,7 @@ class GermanDataset():
         data.columns=['Existing-Account-Status','Month-Duration','Credit-History','Purpose','Credit-Amount','Saving-Account','Present-Employment','Instalment-Rate','Sex','Guarantors','Residence','Property','Age','Installment','Housing','Existing-Credits','Job','Num-People','Telephone','Foreign-Worker','Status']
         self.cat_feats=['Credit-History','Purpose','Present-Employment', 'Sex','Guarantors','Property','Installment','Telephone','Foreign-Worker','Existing-Account-Status','Saving-Account','Housing','Job']
         self.num_feats =['Month-Duration','Credit-Amount']
+        self.delta = 1.
         
         label_encoder = LabelEncoder()
         for x in self.cat_feats:
@@ -272,6 +274,7 @@ class IncomeDataset():
         ca_features['SEX'] = ca_features['SEX'].map({2.0: 1, 1.0: 0}).astype(int)
         data = pd.concat([ca_features, ca_labels], axis=1)
         self.num_samples = len(data)
+        self.delta = 3.
         
         data['PINCP'] = data['PINCP'].map({True: 1, False:0}).astype(int)
         data = data.rename(columns = {'SEX':'z'})

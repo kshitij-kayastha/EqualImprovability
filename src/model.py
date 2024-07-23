@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 class LR(nn.Module):
@@ -11,6 +12,23 @@ class LR(nn.Module):
     def forward(self, x):
         x = self.layers(x)
         return x
+    
+    def set_theta(self, theta):
+        for module in self.layers:
+            if hasattr(module, 'weight'):
+                module.weight.data = theta[:-1].reshape(1,-1)
+            if hasattr(module, 'bias'):
+                module.bias.data = theta[-1]
+        return self
+    
+    def get_theta(self):
+        for module in self.layers:
+            if hasattr(module, 'weight'):
+                weights = module.weight.data
+            if hasattr(module, 'bias'):
+                bias = module.bias.data
+        theta = torch.cat((weights[0], bias), 0)
+        return theta
     
 
 class NN(nn.Module):

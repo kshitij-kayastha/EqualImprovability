@@ -85,6 +85,3 @@ class Optimal_Effort(Effort):
         efforts = Variable(efforts_update, requires_grad = True)
         
         return x + efforts
-    
-    def change_delta_prime(self, delta_prime):
-        self.delta = delta_prime
