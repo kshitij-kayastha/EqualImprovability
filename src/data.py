@@ -124,7 +124,52 @@ class SyntheticDataset():
             test_tensors = df_to_tensor(self.XZ_test.values, self.Y_test.values, self.Z_test.values)
         return train_tensors, val_tensors, test_tensors
 
-    
+
+class SBADataset():
+    def __init__(self, seed: int | None = None):
+        super().__init__(True)
+        data = pd.read_csv('../data/SBAcase.11.13.17.csv').sample(frac=1, random_state=seed)
+        self.num_samples = len(data)
+        
+        data = data.drop(columns=["Selected", "State","Name", "BalanceGross", "LowDoc","BankState",
+                                  "LoanNr_ChkDgt","MIS_Status","Default", "Bank", "City"])
+
+        self.cat_feats = [
+            'RevLineCr'
+        ]
+        
+        self.num_feats = [
+            'Zip', 'NAICS', 'ApprovalDate', 'ApprovalFY', 'Term',
+              'NoEmp', 'NewExist', 'CreateJob', 'RetainedJob', 'FranchiseCode',
+                'UrbanRural', 'ChgOffDate', 'DisbursementDate', 'DisbursementGross',
+                  'ChgOffPrinGr', 'GrAppv', 'SBA_Appv', 'Portion', 'daysterm', 'xx']
+        
+        data['NoDefault'] = 1 - data['Default'].values
+        data = data.drop(columns=['Default'])
+
+        data = pd.get_dummies(data, columns=self.cat_feats)
+        data = data.rename(columns = {'NoDefault':'y'})
+        data = data.rename(columns = {'NAICS':'z'})
+
+        data[self.num_feats] = data[self.num_feats].astype(float)
+        
+        self.Z = data['z']
+        self.Y = data['y']
+        self.X = data.drop(labels=['y'], axis=1)
+        self.XZ = pd.concat([self.X, self.Z], axis=1)
+
+        self.sensitive_attrs = sorted(list(set(self.Z)))
+
+        self.set_improvable_features()
+
+    def set_improvable_features(self):
+        self.imp_feats = {
+            'U_index': np.setdiff1d(np.arange(25),[3, 24]),
+            'C_index': [3,24],
+            'C_min': [0,0],
+            'C_max': [306,30000]
+        }
+   
 class GermanDataset():
     def __init__(self, seed: int | None = None):
 
