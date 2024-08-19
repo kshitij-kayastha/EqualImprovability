@@ -35,22 +35,33 @@ class FairnessDataset(Dataset):
 
 
 class SyntheticDataset():
-    def __init__(self, num_samples=20000, z1_mean=0.3, z2_mean=0.5, seed=None):
+    def __init__(self, num_samples=20000, z1_mean=0.5, z2_mean=0.5, seed=None):
         self.num_samples = num_samples
         self.z1_mean = z1_mean
         self.z2_mean = z2_mean
         self.delta = 0.5
+        self.name = 'synthetic'
         
         rng = np.random.default_rng(seed)
         
         xs, ys, zs = [], [], []
 
         x_dist = {
-            (0,0): {'mean':(-0.1,-0.2), 'cov': np.array([[0.4,0.0], [0.0,0.4]])},
-            (0,1): {'mean': (-0.2,-0.3), 'cov': np.array([[0.2,0.0], [0.0,0.2]])},
-            (1,0): {'mean': (0.1,0.4), 'cov': np.array([[0.2,0.0], [0.0,0.2]])},
-            (1,1): {'mean': (0.4,0.3), 'cov': np.array([[0.1,0.0], [0.0,0.1]])},
+            # y, z
+            # Group 0
+            (0,0): {'mean':(-3.5,-2), 'cov': np.array([[0.2,0.0], [0.0,0.2]])},
+            (1,0): {'mean': (0.3, 0.4), 'cov': np.array([[0.2,0.0], [0.0,0.2]])},
+            # Group 1
+            (0,1): {'mean': (-3.5, 2), 'cov': np.array([[0.2,0.0], [0.0,0.2]])},
+            (1,1): {'mean': (0.5, 0.5), 'cov': np.array([[0.1,0.0], [0.0,0.1]])},
             }
+        
+        # x_dist = {
+        #     (0,0): {'mean':(-0.1,-0.2), 'cov': np.array([[0.4,0.0], [0.0,0.4]])},
+        #     (0,1): {'mean': (-0.2,-0.3), 'cov': np.array([[0.2,0.0], [0.0,0.2]])},
+        #     (1,0): {'mean': (0.1,0.4), 'cov': np.array([[0.2,0.0], [0.0,0.2]])},
+        #     (1,1): {'mean': (0.4,0.3), 'cov': np.array([[0.1,0.0], [0.0,0.1]])},
+        #     }
         y_means = [self.z1_mean, self.z2_mean]
         
         for _ in range(self.num_samples):
@@ -63,6 +74,7 @@ class SyntheticDataset():
 
         data = pd.DataFrame(zip(np.array(xs).T[0], np.array(xs).T[1], ys, zs), columns = ['x1', 'x2', 'y', 'z'])
         rng.shuffle(data.values)
+        self.data = data
         
         self.X = data[['x1', 'x2']]
         self.Y = data['y']

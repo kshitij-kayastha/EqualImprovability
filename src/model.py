@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 class LR(nn.Module):
     def __init__(self, num_features):
@@ -14,6 +15,8 @@ class LR(nn.Module):
         return x
     
     def set_theta(self, theta):
+        if isinstance(theta, np.ndarray):
+            theta = torch.from_numpy(theta).float()
         for module in self.layers:
             if hasattr(module, 'weight'):
                 module.weight.data = theta[:-1].reshape(1,-1)
