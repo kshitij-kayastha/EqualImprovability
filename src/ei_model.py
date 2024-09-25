@@ -15,17 +15,19 @@ from ei_utils import model_performance
 
 
 def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor):
-    proxy_val = torch.tensor(0.)
+    proxy_value = torch.tensor(0.)
     loss_fn = torch.nn.BCELoss(reduction='mean')
+
     loss_mean = loss_fn(Y_hat_max, torch.ones(len(Y_hat_max)))
-    for z in torch.unique(Z):
+
+    for z in [0,1]:
         z = int(z)
-        group_idx = (Z == z)
+        group_idx = (Z==z)
         if group_idx.sum() == 0:
             continue
         loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
-        proxy_val += torch.abs(loss_z-loss_mean)
-    return proxy_val
+        proxy_value += torch.abs(loss_z - loss_mean)
+    return proxy_value
 
 def covariance_proxy(Z: torch.tensor, Y_hat_max: torch.tensor):
     proxy_val = torch.square(torch.mean((Z-Z.mean())*Y_hat_max))
