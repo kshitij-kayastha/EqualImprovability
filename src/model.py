@@ -33,6 +33,23 @@ class LR(nn.Module):
         theta = torch.cat((weights[0], bias), 0)
         return theta
     
+    
+    def xavier_init(self):
+        for p in self.parameters():
+            if len(p.shape) > 1:
+                nn.init.xavier_uniform_(p)
+        return self
+    
+    def bounded_init(self, weights_bound, bias_bound):
+        for p in self.parameters():
+            if len(p.shape) > 1:
+                with torch.no_grad():
+                    p += torch.randn(p.shape).clamp(weights_bound[0], weights_bound[1])
+            elif len(p.shape) == 1:
+                with torch.no_grad():
+                    p += torch.randn(p.shape).clamp(bias_bound[0], bias_bound[1])
+        return self
+    
 
 class NN(nn.Module):
     def __init__(self, num_features, n_layers):
