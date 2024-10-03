@@ -5,13 +5,14 @@ import torch.nn as nn
 import torch.optim as optim
 from copy import deepcopy
 from typing import Callable
+from torch.autograd import grad
 from types import SimpleNamespace
+from scipy.optimize import linprog
 from torch.utils.data import DataLoader, random_split
 
-from src.model import LR, NN
-from src.effort import Effort
-from src.data import FairnessDataset
-from src.utils import model_performance
+from model import LR, NN
+from ei_effort import Effort
+from data import FairnessDataset
 
 
 def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor):
@@ -200,6 +201,182 @@ class EIModel():
         
         Y_hat = Y_hat.detach().float().numpy()
         # X_hat_max = self.effort(self.model, dataset, dataset.X)
+        Y_hat_max = self.model_adv(X_hat_max).reshape(-1).detach().float().numpy()
+        pred_loss = pred_loss.detach().item()
+        fair_loss = fair_loss.detach().item()
+        
+        return Y_hat, Y_hat_max, pred_loss, fair_loss
+    
+    
+    
+class EIModel_S():
+    def __init__(self, model: LR | NN, proxy: Callable, effort: Effort, tau: float = 0.5) -> None:
+        self.model = model
+        self.proxy = proxy
+        self.effort = effort
+        self.tau = tau
+        self.train_history = SimpleNamespace()
+        
+    def get_model_adv(self, X_hat_max, Z_e, alpha):
+        
+        model_adv = deepcopy(self.model)
+        theta = model_adv.get_theta()
+        X_hat_max = torch.cat((X_hat_max, torch.ones((len(X_hat_max),1))), 1)
+        
+        A_eq = np.empty((0, len(theta)), float)
+        b_eq = np.array([])
+
+        theta = theta.reshape(1,-1).T
+        theta.requires_grad = True 
+        
+        # Y_hat_max = model_adv(X_hat_max).reshape(-1)
+        Y_hat_max = torch.nn.Sigmoid()(torch.matmul(X_hat_max, theta)).reshape(-1)
+        
+        fair_loss = self.proxy(Z_e, Y_hat_max)
+        
+        gradient_w_loss = grad(fair_loss, theta)[0].reshape(-1)
+        # print(A_eq)
+        # print(gradient_w_loss)
+
+        c = list(np.array(gradient_w_loss) * np.array([-1] * len(gradient_w_loss)))
+        bound = (-alpha, alpha)
+        bounds = [bound] * len(gradient_w_loss)
+
+        res = linprog(c, bounds=bounds, A_eq=A_eq, b_eq=b_eq, method='simplex')
+        alpha_opt = res.x  # the delta value that maximizes the function
+        weights_alpha, bias_alpha = torch.from_numpy(alpha_opt[:-1]).float(), torch.from_numpy(alpha_opt[[-1]]).float()
+        
+        for module in model_adv.layers:
+            if hasattr(module, 'weight'):
+                module.weight.data += weights_alpha.reshape(1,-1)
+                
+            if hasattr(module, 'bias'):
+                module.bias.data += bias_alpha
+        
+        return model_adv
+        
+    def train(self, 
+              dataset: FairnessDataset, 
+              lamb: float,
+              alpha: float = 0.,
+              lr: float = 1e-3,
+              n_epochs: int = 100,
+              batch_size: int = 1024,
+              abstol: float = 1e-7,
+              pga_n_iters: int = 50 
+              ):
+
+        generator = torch.Generator().manual_seed(0)
+        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, generator=generator)
+        
+        pred_losses = []
+        fair_losses = []
+        total_losses = []
+        thetas = []
+        theta_advs = []
+        
+        loss_fn = torch.nn.BCELoss(reduction='mean')
+        optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
+        
+        # THIS IS FOR CONVERGENCE
+        loss_diff = 1.
+        prev_loss = torch.tensor(0.)
+        
+        for epoch in tqdm.trange(n_epochs, desc=f"Training [alpha={alpha:.3f}; lambda={lamb:.5f}; delta={self.effort.delta:.3f}]", unit="epochs", colour='#0091ff'):
+            
+            batch_losses = []
+            batch_pred_losses = []
+            batch_fair_losses = []
+
+            curr_alpha = alpha * (epoch / n_epochs)
+            for _, (X_batch, Y_batch, Z_batch) in enumerate(data_loader):
+                Y_hat = self.model(X_batch).reshape(-1)
+                
+                batch_pred_loss = loss_fn(Y_hat, Y_batch)
+                batch_loss = (1-lamb)*batch_pred_loss
+                
+                batch_fair_loss = 0
+                if torch.sum(Y_hat<self.tau) > 0:
+                    X_batch_e = X_batch[(Y_hat<self.tau), :]
+                    Z_batch_e = Z_batch[(Y_hat<self.tau)]
+                    
+                    X_hat_max = self.effort(self.model, dataset, X_batch_e)
+
+                    # Projected Gradient Ascent   
+                    if alpha > 0:
+                        model_adv = self.get_model_adv(X_hat_max, Z_batch_e, curr_alpha)
+                        Y_hat_max = model_adv(X_hat_max).reshape(-1)
+                    else:
+                        Y_hat_max = self.model(X_hat_max).reshape(-1)
+                    batch_fair_loss = self.proxy(Z_batch_e, Y_hat_max)
+                
+                batch_loss += lamb*batch_fair_loss
+                
+                optimizer.zero_grad()
+                if torch.isnan(batch_loss).any():
+                    continue
+                batch_loss.backward()
+                optimizer.step()
+                
+                batch_pred_losses.append(batch_pred_loss.item())
+                if hasattr(batch_fair_loss, 'item'):
+                    batch_fair_losses.append(batch_fair_loss.item())
+                else:
+                    batch_fair_losses.append(batch_fair_loss)
+                batch_losses.append(batch_loss.item())
+            
+            pred_losses.append(np.mean(batch_pred_losses))
+            fair_losses.append(np.mean(batch_fair_losses))
+            total_losses.append(np.mean(batch_losses))
+            thetas.append(deepcopy(self.model.get_theta()))
+            if alpha > 0:
+                theta_advs.append(deepcopy(model_adv.get_theta()))
+            
+            # THIS IS FOR CONVERGENCE (I'm not sure if this is correct)
+            loss_diff = torch.abs(prev_loss - torch.mean(torch.tensor(batch_losses)))
+            
+            if loss_diff < abstol:
+                self.train_history.pred_loss = pred_losses
+                self.train_history.fair_loss = fair_losses
+                self.train_history.total_loss = total_losses
+                return self
+            
+            prev_loss = torch.mean(torch.tensor(batch_losses)).clone().detach()
+
+        self.train_history.pred_loss = pred_losses
+        self.train_history.fair_loss = fair_losses
+        self.train_history.total_loss = total_losses
+        self.train_history.thetas = thetas
+        if alpha > 0:
+            self.train_history.theta_advs = theta_advs
+        return self
+        
+        
+    def predict(self,
+                dataset: FairnessDataset,
+                alpha: float,
+                abstol: float = 1e-7,
+                pga_n_iters: int = 50
+                ):
+        
+        loss_fn = torch.nn.BCELoss(reduction='mean')
+    
+        Y_hat = self.model(dataset.X).reshape(-1)
+        pred_loss =  loss_fn(Y_hat, dataset.Y)
+        
+        if torch.sum(Y_hat<self.tau) > 0:
+            X_e = dataset.X[(Y_hat<self.tau).reshape(-1),:]
+            Z_e = dataset.Z[(Y_hat<self.tau)]
+            
+            X_hat_max = self.effort(self.model, dataset, X_e) 
+            self.model_adv = self.get_model_adv(X_hat_max, Z_e, alpha)
+            Y_hat_max = self.model_adv(X_hat_max).reshape(-1)
+            fair_loss = self.proxy(Z_e, Y_hat_max)
+        else:
+            fair_loss = torch.tensor([0.]).float()
+            self.model_adv = deepcopy(self.model)
+        
+        Y_hat = Y_hat.detach().float().numpy()
         Y_hat_max = self.model_adv(X_hat_max).reshape(-1).detach().float().numpy()
         pred_loss = pred_loss.detach().item()
         fair_loss = fair_loss.detach().item()
