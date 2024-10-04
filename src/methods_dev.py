@@ -40,22 +40,24 @@ def covariance_proxy(Z: torch.tensor, Y_hat_max: torch.tensor):
     return proxy_value
 
 
-class EI:
-    def __init__(self, model: LR | NN, proxy: Callable, effort: Effort, tau: float = 0.5) -> None:
+
+class EIModel():
+    def __init__(self, model: LR | NN, proxy: Callable, effort: Effort, model_adv: LR | NN | None = None, tau: float = 0.5) -> None:
         self.model = model
+        self.model_adv = model_adv
         self.proxy = proxy
         self.effort = effort
         self.tau = tau
         self.train_history = SimpleNamespace()
         
-        
     def train(self, 
               dataset: FairnessDataset, 
               lamb: float,
+              alpha: float = 0.,
               lr: float = 1e-3,
               n_epochs: int = 100,
               batch_size: int = 1024,
-              pga_abstol: float = 1e-7,
+              abstol: float = 1e-7,
               pga_n_iters: int = 50 
               ):
 
@@ -109,174 +111,13 @@ class EI:
                                     bias_min = module.bias.data - curr_alpha
                                     bias_max = module.bias.data + curr_alpha
                             
-                            model_adv = deepcopy(self.model)#.bounded_init((weight_min, weight_max), (bias_min, bias_max))
+                            model_adv = deepcopy(self.model).xavier_init().clamp((weight_min, weight_max), (bias_min, bias_max))
                             optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-3, maximize=True)
                                     
                             loss_diff_pga = 1.
                             fair_loss_pga = torch.tensor(0.)
 
-                            for _ in range(int(pga_n_iters * epoch / n_epochs)):
-                                prev_loss = fair_loss_pga.clone().detach()
-                                
-                                Y_hat_max_pga = model_adv(X_hat_max).reshape(-1)
-                                
-                                fair_loss_pga = torch.tensor(0.)
-                                loss_fn = torch.nn.MSELoss(reduction='mean')
-
-                                loss_mean = loss_fn(Y_hat_max_pga, torch.ones(len(Y_hat_max_pga)))
-                                for z in [0,1]:
-                                    z = int(z)
-                                    group_idx = (Z_batch_e==z)
-                                    if group_idx.sum() == 0:
-                                        loss_z = torch.tensor(0.)
-                                    else:
-                                        loss_z = loss_fn(Y_hat_max_pga[group_idx], torch.ones(group_idx.sum()))
-                                    fair_loss_pga += torch.abs(loss_z - loss_mean)
-                
-                                optimizer_adv.zero_grad()
-                                fair_loss_pga.backward()
-                                optimizer_adv.step()
-                                
-                                for module in model_adv.layers:
-                                    if hasattr(module, 'weight'):
-                                        module.weight.data = module.weight.data.clamp(weight_min, weight_max)
-                                    if hasattr(module, 'bias'):
-                                        module.bias.data = module.bias.data.clamp(bias_min, bias_max)
-                                
-                                loss_diff_pga = (prev_loss - fair_loss_pga).abs()
-                                # if loss_diff_pga < abstol:
-                                #     break
-                        
-                        Y_hat_max = model_adv(X_hat_max).reshape(-1)
-                    else:
-                        Y_hat_max = self.model(X_hat_max).reshape(-1)
-                    
-                    batch_fair_loss = torch.tensor(0.)
-                    loss_fn = torch.nn.MSELoss(reduction='mean')
-                    loss_mean = loss_fn(Y_hat_max, torch.ones(len(Y_hat_max)))
-                    for z in [0,1]:
-                        z = int(z)
-                        group_idx = (Z_batch_e==z)
-                        if group_idx.sum() == 0:
-                            loss_z = torch.tensor(0.)
-                        else:
-                            loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
-                        batch_fair_loss += torch.abs(loss_z - loss_mean)
-                
-                batch_loss += lamb*batch_fair_loss
-                
-                optimizer.zero_grad()
-                if torch.isnan(batch_loss).any():
-                    continue
-                batch_loss.backward()
-                optimizer.step()
-                
-                batch_pred_losses.append(batch_pred_loss.item())
-                # if hasattr(batch_fair_loss, 'item'):
-                batch_fair_losses.append(batch_fair_loss.item())
-                # else:
-                    # batch_fair_losses.append(batch_fair_loss)
-                batch_losses.append(batch_loss.item())
-            
-            pred_losses.append(np.mean(batch_pred_losses))
-            fair_losses.append(np.mean(batch_fair_losses))
-            total_losses.append(np.mean(batch_losses))
-            thetas.append(deepcopy(self.model.get_theta()))
-            
-            # THIS IS FOR CONVERGENCE (I'm not sure if this is correct)
-            loss_diff = torch.abs(prev_loss - torch.mean(torch.tensor(batch_losses)))
-            
-            if loss_diff < pga_abstol:
-                self.train_history.pred_loss = pred_losses
-                self.train_history.fair_loss = fair_losses
-                self.train_history.total_loss = total_losses
-                return self
-            
-            prev_loss = torch.mean(torch.tensor(batch_losses)).clone().detach()
-
-        self.train_history.pred_loss = pred_losses
-        self.train_history.fair_loss = fair_losses
-        self.train_history.total_loss = total_losses
-        return self
-
-
-class EIModel():
-    def __init__(self, model: LR | NN, proxy: Callable, effort: Effort, model_adv: LR | NN | None = None, tau: float = 0.5) -> None:
-        self.model = model
-        self.model_adv = model_adv
-        self.proxy = proxy
-        self.effort = effort
-        self.tau = tau
-        self.train_history = SimpleNamespace()
-        
-    def train(self, 
-              dataset: FairnessDataset, 
-              lamb: float,
-              alpha: float = 0.,
-              lr: float = 1e-3,
-              n_epochs: int = 100,
-              batch_size: int = 1024,
-              abstol: float = 1e-7,
-              pga_n_iters: int = 50 
-              ):
-
-        generator = torch.Generator().manual_seed(0)
-        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, generator=generator)
-        
-        pred_losses = []
-        fair_losses = []
-        total_losses = []
-        theta_advs = []
-        thetas = []
-        
-        
-        loss_fn = torch.nn.BCELoss(reduction='mean')
-        optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        
-        # THIS IS FOR CONVERGENCE
-        loss_diff = 1.
-        prev_loss = torch.tensor(0.)
-        
-        for epoch in tqdm.trange(n_epochs, desc=f"Training [alpha={alpha:.3f}; lambda={lamb:.5f}; delta={self.effort.delta:.3f}]", unit="epochs", colour='#0091ff'):
-            
-            batch_losses = []
-            batch_pred_losses = []
-            batch_fair_losses = []
-
-            curr_alpha = alpha #* (epoch / n_epochs)
-            for _, (X_batch, Y_batch, Z_batch) in enumerate(data_loader):
-                Y_hat = self.model(X_batch).reshape(-1)
-                
-                batch_pred_loss = loss_fn(Y_hat, Y_batch)
-                batch_loss = (1-lamb)*batch_pred_loss
-                
-                batch_fair_loss = torch.tensor(0.)
-                if torch.sum(Y_hat<self.tau) > 0:
-                    X_batch_e = X_batch[(Y_hat<self.tau), :]
-                    Z_batch_e = Z_batch[(Y_hat<self.tau)]
-                    
-                    X_hat_max = self.effort(self.model, dataset, X_batch_e)
-
-                    # Projected Gradient Ascent   
-                    if alpha > 0:
-                        if self.model_adv is not None:
-                            model_adv =  self.model_adv
-                        else:
-                            for module in self.model.layers:
-                                if hasattr(module, 'weight'):
-                                    weight_min = module.weight.data - curr_alpha
-                                    weight_max = module.weight.data + curr_alpha
-                                if hasattr(module, 'bias'):
-                                    bias_min = module.bias.data - curr_alpha
-                                    bias_max = module.bias.data + curr_alpha
-                            
-                            model_adv = deepcopy(self.model).randn_init().clamp((weight_min, weight_max), (bias_min, bias_max))
-                            optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-3, maximize=True)
-                                    
-                            loss_diff_pga = 1.
-                            fair_loss_pga = torch.tensor(0.)
-
-                            for _ in range(int(pga_n_iters * epoch / n_epochs)):
+                            for _ in range(int(pga_n_iters)):
                                 prev_loss = fair_loss_pga.clone().detach()
                                 
                                 Y_hat_max_pga = model_adv(X_hat_max).reshape(-1)
