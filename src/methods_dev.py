@@ -29,7 +29,7 @@ def fair_batch_proxy(Z: torch.tensor, Y_hat_max: torch.tensor):
         z = int(z)
         group_idx = (Z==z)
         if group_idx.sum() == 0:
-            loss_z = torch.tensor(0.)
+            loss_z = torch.tensor(0.).float()
         else:
             loss_z = loss_fn(Y_hat_max[group_idx], torch.ones(group_idx.sum()))
         fair_loss += torch.abs(loss_z - loss_mean)
@@ -117,11 +117,7 @@ class EIModel:
             fair_loss.backward()
             optimizer_adv.step()
             
-            for module in model_adv.layers:
-                if hasattr(module, 'weight'):
-                    module.weight.data = module.weight.data.clamp(weight_min, weight_max)
-                if hasattr(module, 'bias'):
-                    module.bias.data = module.bias.data.clamp(bias_min, bias_max)
+            model_adv.clamp((weight_min, weight_max), (bias_min, bias_max))
                     
             loss_diff = (prev_loss - fair_loss).abs()
             # if loss_diff < pga_abstol:
@@ -152,7 +148,7 @@ class EIModel:
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, generator=generator)
         
         loss_fn = torch.nn.BCELoss(reduction='mean')
-        optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
         
         loss_diff = 1.
         prev_loss = torch.tensor(0.)
@@ -172,49 +168,46 @@ class EIModel:
                 batch_loss = (1-lamb)*batch_pred_loss
                 
                 batch_fair_loss = torch.tensor(0.)
-                if torch.sum(Y_hat<self.tau) == 0:
-                    continue
-                
-                X_batch_e = X_batch[(Y_hat<self.tau), :]
-                Z_batch_e = Z_batch[(Y_hat<self.tau)]
-                
-                X_hat_max = self.effort(self.model, dataset, X_batch_e)
-                if alpha > 0:
-                    if self.pga:
-                        model_adv = self.get_model_adv_pga(X_hat_max, Z_batch_e, curr_alpha, pga_n_epochs, pga_abstol)
+                if torch.sum(Y_hat<self.tau) > 0:
+                    optimizer.zero_grad()
+                    
+                    X_batch_e = X_batch[(Y_hat<self.tau),:]
+                    Z_batch_e = Z_batch[(Y_hat<self.tau)]
+                    
+                    X_hat_max = self.effort(self.model, dataset, X_batch_e)
+                    if alpha > 0:
+                        if self.pga:
+                            model_adv = self.get_model_adv_pga(X_hat_max, Z_batch_e, curr_alpha, pga_n_epochs, pga_abstol)
+                        else:
+                            model_adv = self.get_model_adv_solver(X_hat_max, Z_batch_e, curr_alpha)
                     else:
-                        model_adv = self.get_model_adv_solver(X_hat_max, Z_batch_e, curr_alpha)
-                else:
-                    model_adv = self.model
-                Y_hat_max = model_adv(X_hat_max).reshape(-1)
-
-                batch_fair_loss = self.proxy(Z_batch_e, Y_hat_max)
-                batch_loss += lamb*batch_fair_loss
+                        model_adv = self.model
+                    
+                    Y_hat_max = model_adv(X_hat_max).reshape(-1)
+                    batch_fair_loss = self.proxy(Z_batch_e, Y_hat_max)
                 
-                optimizer.zero_grad()
+                batch_loss += lamb*batch_fair_loss
+
+                if torch.isnan(batch_loss).any():
+                    continue
                 batch_loss.backward()
                 optimizer.step()
-                
+            
                 batch_pred_losses.append(batch_pred_loss.item())
                 batch_fair_losses.append(batch_fair_loss.item())
                 batch_losses.append(batch_loss.item())
-                
-                loss_diff = torch.abs(prev_loss - batch_loss)
-                if loss_diff < abstol:
-                    early_stop_epoch = epoch
-                    break
-                
-                prev_loss = batch_loss.clone().detach()
             
-            self.train_history.pred_loss.append(np.mean(batch_pred_losses) if batch_pred_losses else 0)
-            self.train_history.fair_loss.append(np.mean(batch_fair_losses) if batch_fair_losses else 0)
-            self.train_history.total_loss.append(np.mean(batch_losses) if batch_losses else 0)
+            self.train_history.pred_loss.append(np.mean(batch_pred_losses))
+            self.train_history.fair_loss.append(np.mean(batch_fair_losses))
+            self.train_history.total_loss.append(np.mean(batch_losses))
             self.train_history.theta.append(deepcopy(self.model.get_theta()))
             self.train_history.theta_adv.append(deepcopy(model_adv.get_theta()))
-                
-            if early_stop_epoch:
-                break
             
+            loss_diff = torch.abs(prev_loss - torch.mean(torch.tensor(batch_losses)))
+            if loss_diff < abstol:
+                break
+                
+            prev_loss = torch.mean(torch.tensor(batch_losses))
         
         return self
         
