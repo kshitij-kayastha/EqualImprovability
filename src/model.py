@@ -33,20 +33,22 @@ class LR(nn.Module):
         theta = torch.cat((weights[0], bias), 0)
         return theta.clone().detach()
 
-    def xavier_init(self):
+    def xavier_init(self, seed: float = 0):
+        generator = torch.Generator().manual_seed(seed)
         for p in self.parameters():
             if len(p.shape) > 1:
-                nn.init.xavier_uniform_(p)
+                nn.init.xavier_uniform_(p, generator=generator)
         return self
     
-    def randn_init(self):
+    def randn_noise(self, seed: float = 0):
+        generator = torch.Generator().manual_seed(seed)
         for p in self.parameters():
             if len(p.shape) > 1:
                 with torch.no_grad():
-                    p += torch.randn(p.shape)
+                    p += torch.randn(p.shape, generator=generator)
             elif len(p.shape) == 1:
                 with torch.no_grad():
-                    p += torch.randn(p.shape)
+                    p += torch.randn(p.shape, generator=generator)
         return self
     
     def clamp(self, weights_bound, bias_bound):
