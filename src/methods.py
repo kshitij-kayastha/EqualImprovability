@@ -111,16 +111,29 @@ class EIModel:
         self.tau = tau
         self.train_history = SimpleNamespace()
         
-    def get_model_adv(self, X_hat_max: torch.Tensor, Z: torch.Tensor, alpha: float, n_epochs: int):
+    def get_model_adv(self, X_hat_max: torch.Tensor, Z: torch.Tensor, alpha: float, n_epochs: int, seed: int = 0):
+        weight_mins, weight_maxs = [], []
+        bias_mins, bias_maxs = [], []
         for module in self.model.layers:
             if hasattr(module, 'weight'):
                 weight_min = module.weight.data - alpha
                 weight_max = module.weight.data + alpha
+                weight_mins.append(weight_min)
+                weight_maxs.append(weight_max)
+            else:
+                weight_mins.append(0)
+                weight_maxs.append(0)
+            
             if hasattr(module, 'bias'):
                 bias_min = module.bias.data - alpha
                 bias_max = module.bias.data + alpha
+                bias_mins.append(bias_min)
+                bias_maxs.append(bias_max)
+            else:
+                bias_mins.append(0)
+                bias_maxs.append(0)
         
-        model_adv = deepcopy(self.model).xavier_init().clamp((weight_min, weight_max), (bias_min, bias_max))
+        model_adv = deepcopy(self.model).xavier_init(seed).clamp((weight_mins, weight_maxs), (bias_mins, bias_maxs))
         # model_adv = deepcopy(self.model).randn_noise().clamp((weight_min, weight_max), (bias_min, bias_max))
         optimizer_adv = optim.Adam(model_adv.parameters(), lr=1e-3, maximize=True)
                 
@@ -134,7 +147,7 @@ class EIModel:
             fair_loss.backward()
             optimizer_adv.step()
             
-            model_adv.clamp((weight_min, weight_max), (bias_min, bias_max))
+            model_adv.clamp((weight_mins, weight_maxs), (bias_mins, bias_maxs))
                     
         return model_adv
         
@@ -194,12 +207,12 @@ class EIModel:
                     Z_batch_e = Z_batch[(Y_hat<self.tau)]
                     
                     # calculate x + effort
-                    X_hat_max = self.effort(self.model, dataset, X_batch_e)
+                    X_hat_max = self.effort(deepcopy(self.model), dataset, X_batch_e)
                     
                     # find adversarial model
                     if (alpha > 0):
                         if epoch % 20 == 0:
-                            model_adv = self.get_model_adv(X_hat_max, Z_batch_e, curr_alpha, pga_n_epochs)
+                            model_adv = self.get_model_adv(X_hat_max, Z_batch_e, curr_alpha, pga_n_epochs, seed=epoch)
                     else:
                         model_adv = self.model
                     
@@ -228,8 +241,8 @@ class EIModel:
             self.train_history.pred_loss.append(np.mean(batch_pred_losses))
             self.train_history.fair_loss.append(np.mean(batch_fair_losses))
             self.train_history.total_loss.append(np.mean(batch_losses))
-            self.train_history.theta.append(deepcopy(self.model.get_theta()))
-            self.train_history.theta_adv.append(deepcopy(model_adv.get_theta()))
+            # self.train_history.theta.append(deepcopy(self.model.get_theta()))
+            # self.train_history.theta_adv.append(deepcopy(model_adv.get_theta()))
             
             # check for convergence (early termination)
             loss_diff = torch.abs(prev_loss - torch.mean(torch.tensor(batch_losses)))
@@ -267,7 +280,7 @@ class EIModel:
             Z_e = dataset.Z[(Y_hat<self.tau)]
             
             # calculate x + effort
-            X_hat_max = self.effort(self.model, dataset, X_e)
+            X_hat_max = self.effort(deepcopy(self.model), dataset, X_e)
             
             # find adversarial model
             if alpha > 0:

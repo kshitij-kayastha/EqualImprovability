@@ -52,11 +52,11 @@ class LR(nn.Module):
         return self
     
     def clamp(self, weights_bound, bias_bound):
-        for module in self.layers:
+        for mi, module in enumerate(self.layers):
             if hasattr(module, 'weight') and weights_bound:
-                module.weight.data = module.weight.data.clamp(weights_bound[0], weights_bound[1])
+                module.weight.data = module.weight.data.clamp(weights_bound[0][mi], weights_bound[1][mi])
             if hasattr(module, 'bias') and bias_bound:
-                module.bias.data = module.bias.data.clamp(bias_bound[0], bias_bound[1])        
+                module.bias.data = module.bias.data.clamp(bias_bound[0][mi], bias_bound[1][mi])
         return self
     
     
@@ -81,3 +81,18 @@ class NN(nn.Module):
     def forward(self, x):
         x = self.layers(x)
         return x
+    
+    def xavier_init(self, seed: float = 0):
+        generator = torch.Generator().manual_seed(seed)
+        for p in self.parameters():
+            if len(p.shape) > 1:
+                nn.init.xavier_uniform_(p, generator=generator)
+        return self
+    
+    def clamp(self, weights_bound, bias_bound):
+        for mi, module in enumerate(self.layers):
+            if hasattr(module, 'weight') and weights_bound:
+                module.weight.data = module.weight.data.clamp(weights_bound[0][mi], weights_bound[1][mi])
+            if hasattr(module, 'bias') and bias_bound:
+                module.bias.data = module.bias.data.clamp(bias_bound[0][mi], bias_bound[1][mi])
+        return self
