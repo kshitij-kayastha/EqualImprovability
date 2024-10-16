@@ -1,16 +1,86 @@
-from scipy.integrate import quad
+import copy
 import numpy as np
 import pandas as pd
-from scipy.stats import norm, gaussian_kde
-import seaborn as sns
-import copy
-import matplotlib.pyplot as plt
 import matplotlib as mpl
-from scipy.optimize import minimize, differential_evolution, NonlinearConstraint
-from scipy.stats import wasserstein_distance
-from functools import partial
+import plotly.graph_objects as go
+from scipy.stats import norm
+import matplotlib.pyplot as plt
 from tqdm import tqdm 
-from torch.utils.data import DataLoader
+from scipy.integrate import quad
+from scipy.optimize import minimize
+
+
+
+
+def plot_unfairness(dfs, y='disp', df_labels = ['ERM', 'EI', 'REI', 'BE'], n_iters = 20):
+    colors = ['#073B4C','#FFD166','#06D6A0','#118AB2', '#DD3497', '#AE017E', '#7A0177', '#49006A']
+    symbols = ['triangle-down', 'circle', 'square', 'cross']
+    ltype = ['dashdot', 'dash', 'solid', 'dot']
+    
+    fig = go.Figure()
+    for i, df in enumerate(dfs):
+        fig.add_trace(go.Scatter(
+            y = df[:n_iters],
+            name = df_labels[i],
+            marker = dict(color=colors[i], symbol=symbols[i], size=15),
+            line = dict(dash=ltype[i])
+        ))
+        
+    fig.update_layout(
+        width = 800,
+        height = 450,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        font=dict(
+            family='Times New Roman', 
+            color='black'
+            ),
+        legend=dict(
+            x=0.983, 
+            y=0.975, 
+            xanchor='right',
+            font=dict(size=15), 
+            bgcolor='rgba(255, 255, 255, 0.7)',
+            bordercolor='lightgrey',
+            borderwidth=1,
+            entrywidth=0.1,
+            entrywidthmode='pixels',
+            ),
+        )
+    
+    fig.update_xaxes(
+        title=dict(
+            font=dict(size=25),
+            text='Round'
+            ), 
+        showline=True, 
+        mirror=True,
+        linecolor='black', 
+        gridcolor='lightgrey', 
+        zerolinewidth=1,
+        zerolinecolor='lightgrey',
+        )
+
+    fig.update_yaxes(
+        title=dict(
+            font=dict(size=25), 
+            text='Long-term Unfairness'
+            ), 
+        # showline=True, 
+        # mirror=True,
+        linecolor='black', 
+        gridcolor='lightgrey',
+        zerolinewidth=1,
+        zerolinecolor='lightgrey',
+        )
+
+    # fig.layout.annotations[-4]['font'] = dict(size=20)
+    # fig.layout.annotations[-3]['font'] = dict(size=20)
+    # fig.layout.annotations[-2]['font'] = dict(size=25)
+    # fig.layout.annotations[-1]['font'] = dict(size=25)
+    
+    fig.show()
+
 
 
 def drawTrajectory(dfs, y = 'disp', df_labels = ['ERM', 'DP', 'EI', 'BE', 'ER'], 
@@ -64,9 +134,6 @@ def drawTrajectory(dfs, y = 'disp', df_labels = ['ERM', 'DP', 'EI', 'BE', 'ER'],
         plt.savefig('figures/%s.pdf' % file_name)
         print('File saved in figures/%s.pdf!' % file_name)
 
-
-
-
 class populationDynamics_gaussian(object):
     def __init__(self, mean0=0, std0=1, mean1=1, std1=0.9, frac=None, eps=.6, lazy_pos = True, group0_frac = 0.5):
         self.init_data = [{'mean': mean0, 'std': std0}, 
@@ -76,56 +143,29 @@ class populationDynamics_gaussian(object):
         self.err_thres = frac / 2
         self.group_frac = np.array([group0_frac, 1-group0_frac])
         
-    def dataPrint(self, data):
-        mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
-        return (r'$\mu^{(0)}=$%.1f, $\sigma^{(0)}=$%.1f' % (mu0, sigma0), r'$\mu^{(1)}=$%.1f, $\sigma^{(1)}=$%.1f' % (mu1, sigma1))
-
-    def plot(self, data, truebs, bs = None, title = None):
-        fig, ax = plt.subplots(nrows = 1, ncols = 2, sharey = True, sharex = True)
-        labels = self.dataPrint(data)
-        for a in range(2):
-            mu, sigma = data[a]['mean'], data[a]['std']
-            x = np.linspace(mu - 3*sigma, mu + 3*sigma, 100)
-            ax[a].plot(x, norm.pdf(x, mu, sigma))
-            ax[a].set_xlabel(labels[a], fontsize = 18)
-            ymin, ymax = ax[a].get_ylim()
-            ax[a].vlines(x = truebs[a], color = 'g', linestyle='-.', ymin = ymin, ymax = ymax)
-            if not bs is None: ax[a].vlines(x = bs[a], color = 'm', linestyle = '-', ymin = ymin, ymax = ymax)
-        plt.title(title)
-    
-    
-    # Calculate eps(x) in EI paper page 7, last line
     def effort(self, x, boundary, effort_pos = 0, eps = None):
-        # eps below is the beta in the EI paper
-        if eps is None: 
-            eps = self.eps 
+        if eps is None: eps = self.eps 
         if x >= boundary:
             return effort_pos
         else:
-            return 1/(boundary - x + eps)**2
+            return 1/(boundary-x + self.eps)**2
     
     def WassersteinDistance(self, data):
         # https://djalil.chafai.net/blog/2010/04/30/wasserstein-distance-between-two-gaussians/
         mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
         return (mu0 - mu1)**2 + (sigma0 - sigma1)**2
     
-    # Distance
-    # quad means integral from a to b: quad(function, a, b)
     def distance(self, data): 
         mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
-        f = lambda x: abs(norm.pdf(x, mu0, sigma0) - norm.pdf(x, mu1, sigma1))
-        return quad(f, a=-np.inf, b=np.inf)[0]/2
+        return quad(lambda x: abs(norm.pdf(x, mu0, sigma0) - norm.pdf(x, mu1, sigma1)), -np.inf, np.inf)[0]/2
 
-    # Calculate Error Rate
     def errorRate(self, data, truebs, bs):
         mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
-        # true boundary
         tb = truebs[0]
         e0 = abs(norm.cdf(tb, mu0, sigma0) - norm.cdf(bs[0], mu0, sigma0))
         e1 = abs(norm.cdf(tb, mu1, sigma1) - norm.cdf(bs[1], mu1, sigma1))
         return e0*self.group_frac[0]+e1*self.group_frac[1]
-    
-    # True Boundary
+        
     def trueBoundary(self, data, thres = 1e-3):
         if self.frac:
             mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
@@ -143,44 +183,55 @@ class populationDynamics_gaussian(object):
         else:
             return np.zeros(2)
         
-    # Demographic Parity
     def dpDisp(self, data, bs, is_abs = True):
         pos = []
-        for z in range(2):
-            mu, sigma = data[z]['mean'], data[z]['std']
-            pos.append(1-norm.cdf(bs[z], mu, sigma))
+        for a in range(2):
+            mu, sigma = data[a]['mean'], data[a]['std']
+            pos.append(1-norm.cdf(bs[a], mu, sigma))
         return abs(pos[1] - pos[0]) if is_abs else pos[1] - pos[0]
         
-    # EI Disparity
-    def eiDisp(self, data, bs, delta, is_abs = True):
+    def efDisp(self, data, bs, delta, is_abs = True):
         pos = []
-        for z in range(2):
-            mu, sigma = data[z]['mean'], data[z]['std']
+        for a in range(2):
+            mu, sigma = data[a]['mean'], data[a]['std']
             
-            # CDF for normal distribution with mean mu and std dev sigma
-            # (CDF(x+d) - CDF(x)) / CDF(x)
-            pos.append((norm.cdf(bs[z], mu + delta, sigma) - norm.cdf(bs[z], mu, sigma)) / norm.cdf(bs[z], mu, sigma))
-            
+            pos.append(
+                (norm.cdf(bs[a], mu + delta, sigma)-norm.cdf(bs[a], mu, sigma)) / norm.cdf(bs[a], mu, sigma)
+                )
+        
         return abs(pos[1] - pos[0]) if is_abs else pos[1] - pos[0]
+    
+    def reiDisp(self, data, bs, delta, is_abs = True, beta = 0.2):
+        pos = [{'none': [], '+': [], '-': []}, {'none': [], '+': [], '-': []}]
+        beta = 0.2
+        for a in range(2):
+            mu, sigma = data[a]['mean'], data[a]['std']
+            pos[a]['+'].append((norm.cdf(bs[a], mu + delta + beta, sigma)-norm.cdf(bs[a], mu, sigma)) / norm.cdf(bs[a], mu, sigma))
+            pos[a]['-'].append((norm.cdf(bs[a], mu + delta - beta, sigma)-norm.cdf(bs[a], mu, sigma)) / norm.cdf(bs[a], mu, sigma))
+        
+        max_diff = 0
+        for b1 in ['+', '-']:
+            for b2 in ['+', '-']:
+                diff = np.abs(pos[0][b1][0] - pos[1][b2][0])
+                if diff > max_diff:
+                    max_diff = diff
+        return max_diff
 
-    # Bounded Effort
     def beDisp(self, data, bs, delta, is_abs = True):
         pos = []
-        for z in range(2):
-            mu, sigma = data[z]['mean'], data[z]['std']
-            pos.append(norm.cdf(bs[z], mu + delta, sigma)-norm.cdf(bs[z], mu, sigma))
+        for a in range(2):
+            mu, sigma = data[a]['mean'], data[a]['std']
+            pos.append(norm.cdf(bs[a], mu + delta, sigma)-norm.cdf(bs[a], mu, sigma))
         return abs(pos[1] - pos[0]) if is_abs else pos[1] - pos[0]
 
-    # Equal Recourse
     def erDisp(self, data, bs, delta, is_abs = True):
         efforts = []
-        for z in range(2):
-            mu, sigma = data[z]['mean'], data[z]['std']
-            effort = quad(lambda x: (bs[z]-x) * norm.pdf(x, mu, sigma), -np.inf, bs[z])[0]
-            efforts.append(effort / norm.cdf(bs[z], mu, sigma))
+        for a in range(2):
+            mu, sigma = data[a]['mean'], data[a]['std']
+            effort = quad(lambda x: (bs[a]-x) * norm.pdf(x, mu, sigma), -np.inf, bs[a])[0]
+            efforts.append(effort / norm.cdf(bs[a], mu, sigma))
         return abs(efforts[0] - efforts[1]) if is_abs else efforts[1] - efforts[0]
 
-    # ILFCR
     def ilerDisp(self, data, bs, delta, is_abs = True):
         efforts1, efforts2 = [], []
         u0 = (bs[0] - data[0]['mean'])/data[0]['std']
@@ -194,8 +245,7 @@ class populationDynamics_gaussian(object):
             efforts2.append(effort2 / norm.cdf(bs[a], mu, sigma))
         return max(abs(efforts1[0] - efforts1[1]), abs(efforts2[0] - efforts2[1]))
 
-    
-    # Boundary found by Demographic Parity
+        
     def DPBoundary(self, data, truebs, c = 0, thres = 1e-3):
         tb = truebs[0]
         mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
@@ -207,18 +257,26 @@ class populationDynamics_gaussian(object):
         res = minimize(func, truebs, method = 'SLSQP', bounds = bnds, constraints = cons)
         return res.x
 
-    # Boundary found by EI
-    def EIBoundary(self, data, truebs, delta, c = 0, thres = 1e-3):
+    def EFBoundary(self, data, truebs, delta, c = 0, thres = 1e-3):
         tb = truebs[0]
         mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
         
-        func = lambda x: self.eiDisp(data, x, delta)
+        func = lambda x: self.efDisp(data, x, delta)
+        cons = ({'type': 'ineq', 'fun': lambda x: self.err_thres-self.errorRate(data, truebs, x)})
+        bnds = [(mu0-3*sigma0, mu0+3*sigma0), (mu1-3*sigma1, mu1+3*sigma1)]
+        res = minimize(func, truebs, method = 'SLSQP', bounds = bnds, constraints = cons)
+        return res.x
+    
+    def REIBoundary(self, data, truebs, delta, c = 0, thres = 1e-3, beta = 0.2):
+        tb = truebs[0]
+        mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
+        
+        func = lambda x: self.reiDisp(data, x, delta, beta=beta)
         cons = ({'type': 'ineq', 'fun': lambda x: self.err_thres-self.errorRate(data, truebs, x)})
         bnds = [(mu0-3*sigma0, mu0+3*sigma0), (mu1-3*sigma1, mu1+3*sigma1)]
         res = minimize(func, truebs, method = 'SLSQP', bounds = bnds, constraints = cons)
         return res.x
 
-    # Boundary found by Bounded Effort
     def BEBoundary(self, data, truebs, delta, c = 0, thres = 1e-3):
         tb = truebs[0]
         mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
@@ -229,7 +287,6 @@ class populationDynamics_gaussian(object):
         res = minimize(func, truebs, method = 'SLSQP', bounds = bnds, constraints = cons)
         return res.x
 
-    # Boundary found by Equal Recourse
     def ERBoundary(self, data, truebs, delta, c = 0, thres = 1e-3):
         tb = truebs[0]
         mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
@@ -250,32 +307,33 @@ class populationDynamics_gaussian(object):
         res = minimize(func, truebs, method = 'SLSQP', bounds = bnds, constraints = cons)
         return res.x
 
-    # update mean and variance of data
-    def update(self, data, bs, lazy_pos = True):
+    def update(self, data, bs, lazy_pos = True, effort_eps=1.):
         mean_efforts, updated_var = np.zeros(2), np.zeros(2)
         
-        for z in range(2):
+        larger_z = data[1]['mean'] >= data[0]['mean']
+        
+        for a in range(2):
             if lazy_pos:
-                mean_efforts[z] = quad(lambda x: norm.pdf(x, data[z]['mean'], data[z]['std']) \
-                                * self.effort(x, bs[z], eps = 1/data[z]['std'] ** .5), -np.inf, np.inf)[0] 
-                updated_var[z] = quad(lambda x: norm.pdf(x, data[z]['mean'], data[z]['std']) \
-                                 * (x+self.effort(x, bs[z], eps = 1/data[z]['std'] ** .5) - data[z]['mean'] - mean_efforts[z]) ** 2, \
+                mean_efforts[a] = quad(lambda x: norm.pdf(x, data[a]['mean'], data[a]['std']) \
+                                * self.effort(x, bs[a], eps = 1/data[a]['std'] ** .5), -np.inf, np.inf)[0] 
+                updated_var[a] = quad(lambda x: norm.pdf(x, data[a]['mean'], data[a]['std']) \
+                                 * (x+self.effort(x, bs[a], eps = 1/data[a]['std'] ** .5) - data[a]['mean'] - mean_efforts[a]) ** 2, \
                                   -np.inf, np.inf)[0]
             else:
-                effort_neg = quad(lambda x: norm.pdf(x, data[z]['mean'], data[z]['std']) \
-                                    * self.effort(x, bs[z], eps = 1/data[z]['std'] ** .5), -np.inf, bs[z])[0] \
-                                    /norm.cdf(bs[z], data[z]['mean'], data[z]['std'])
+                effort_neg = quad(lambda x: norm.pdf(x, data[a]['mean'], data[a]['std']) \
+                                    * self.effort(x, bs[a], eps = 1/data[a]['std'] ** .5), -np.inf, bs[a])[0] \
+                                    /norm.cdf(bs[a], data[a]['mean'], data[a]['std'])
                 effort_pos = effort_neg
-                mean_efforts[z] = effort_neg
-                updated_var[z] = quad(lambda x: norm.pdf(x, data[z]['mean'], data[z]['std']) \
-                                    * (x+self.effort(x, bs[z], effort_pos, eps = 1/data[z]['std'] ** .5) - data[z]['mean'] - mean_efforts[z]) ** 2, \
+                mean_efforts[a] = effort_neg
+                updated_var[a] = quad(lambda x: norm.pdf(x, data[a]['mean'], data[a]['std']) \
+                                    * (x+self.effort(x, bs[a], effort_pos, eps = 1/data[a]['std'] ** .5) - data[a]['mean'] - mean_efforts[a]) ** 2, \
                                     -np.inf, np.inf)[0]
-            data[z] = {'mean': data[z]['mean'] + mean_efforts[z], 'std': updated_var[z]**.5}
+            # data[a] = {'mean': data[a]['mean'] + mean_efforts[a], 'std': updated_var[a]**.5}
+            data[a] = {'mean': data[a]['mean'] + (mean_efforts[a] / effort_eps if a==larger_z else mean_efforts[a] * effort_eps), 'std': updated_var[a]**.5}
+            # data[a] = {'mean': (data[a]['mean'] * (1+eps) if a==larger_z else data[a]['mean'] * (1-eps)) + mean_efforts[a] , 'std': updated_var[a]**.5}
+            # data[a] = {'mean': (data[a]['mean'] + eps if a==larger_z else data[a]['mean'] - eps) + mean_efforts[a] , 'std': updated_var[a]**.5}
         return data
 
-    # Find $\delta_{t}$
-    # data: x_t
-    # bs: boundary (threshold)
     def selectDelta(self, data, bs, mode = 'median'):
         if mode == 'median':
             mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
@@ -296,57 +354,83 @@ class populationDynamics_gaussian(object):
             return (mean_efforts[0] * neg_frac[0] + mean_efforts[1] * neg_frac[1]) / (neg_frac[0] + neg_frac[1])
         else:
             raise ValueError("Unexpected delta select mode %s! Supported mode: \"mean\" and \"median\"." % mode)
-        
 
-    def run(self, mode = 'true', n_iter = 20, delta = 0.5, c = 0, thres = .001, select_delta = False, plot = True):
-        # ERM
+    def dataPrint(self, data):
+        mu0, sigma0, mu1, sigma1 = data[0]['mean'], data[0]['std'], data[1]['mean'], data[1]['std']
+        return (r'$\mu^{(0)}=$%.1f, $\sigma^{(0)}=$%.1f' % (mu0, sigma0), r'$\mu^{(1)}=$%.1f, $\sigma^{(1)}=$%.1f' % (mu1, sigma1))
+
+    def plot(self, data, truebs, bs = None, title = None):
+        fig, ax = plt.subplots(nrows = 1, ncols = 2, sharey = True, sharex = True)
+        labels = self.dataPrint(data)
+        for a in range(2):
+            mu, sigma = data[a]['mean'], data[a]['std']
+            x = np.linspace(mu - 3*sigma, mu + 3*sigma, 100)
+            ax[a].plot(x, norm.pdf(x, mu, sigma))
+            ax[a].set_xlabel(labels[a], fontsize = 18)
+            ymin, ymax = ax[a].get_ylim()
+            ax[a].vlines(x = truebs[a], color = 'g', linestyle='-.', ymin = ymin, ymax = ymax)
+            if not bs is None: ax[a].vlines(x = bs[a], color = 'm', linestyle = '-', ymin = ymin, ymax = ymax)
+        plt.title(title)
+
+    def run(self, mode = 'true', n_iter = 20, delta = 0.5, c = 0, thres = .001, select_delta = False, plot = True, effort_eps = 1., beta = 0.2):
+        return_data = []
         if mode == 'true':
             data = copy.deepcopy(self.init_data)
             disp, wd, cdp, cef = np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1)
             for i in range(n_iter+1):
                 truebs = self.trueBoundary(data, thres)
-                disp[i], wd[i], cdp[i], cef[i] = self.dpDisp(data, truebs), self.distance(data), self.dpDisp(data, truebs), self.eiDisp(data, truebs, delta)
-                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EI Disp: %.3f, Wasserstein Distance: %.3f' % (
+                disp[i], wd[i], cdp[i], cef[i] = self.dpDisp(data, truebs), self.distance(data), self.dpDisp(data, truebs), self.efDisp(data, truebs, delta)
+                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EF Disp: %.3f, Wasserstein Distance: %.3f' % (
                         i, disp[i], cdp[i], cef[i], wd[i])
                 if plot: self.plot(data, truebs, title = text)
-                data = self.update(data, truebs)
-            return pd.DataFrame({'disp':disp, 'wd':wd, 'cdp': cdp, 'cef': cef})
+                data = self.update(data, truebs, effort_eps=effort_eps)
+                return_data.append(copy.deepcopy(data))
+            return pd.DataFrame({'disp':disp, 'wd':wd, 'cdp': cdp, 'cef': cef}), return_data
                 
-        # Demographic Parity
         elif mode == 'dp':
             data = copy.deepcopy(self.init_data)
             disp, wd, er, cdp, cef = np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1)
             for i in range(n_iter+1):
                 truebs = self.trueBoundary(data, thres)
                 bs = self.DPBoundary(data, truebs, c, thres)
-                disp[i], wd[i], er[i], cdp[i], cef[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.eiDisp(data, bs, delta)
-                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EI Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
+                disp[i], wd[i], er[i], cdp[i], cef[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.efDisp(data, bs, delta)
+                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EF Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
                         i, disp[i], cdp[i], cef[i] , wd[i], er[i])
                 if plot: self.plot(data, truebs, bs, title = text)
-                data = self.update(data, bs)
-            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef})
+                data = self.update(data, bs, effort_eps=effort_eps)
+                return_data.append(copy.deepcopy(data))
+            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef}), return_data
 
-        # EI (INTERESTED IN THIS)
-        elif mode == 'ei':
+        elif mode == 'ef':
             data = copy.deepcopy(self.init_data)
             disp, wd, er, cdp, cef = np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1)
             for i in range(n_iter+1):
                 truebs = self.trueBoundary(data, thres)
-                if select_delta: 
-                    delta = self.selectDelta(data, truebs, select_delta)
-                
-                bs = self.EIBoundary(data, truebs, delta, c, thres)
-                
-                disp[i], wd[i], er[i], cdp[i], cef[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.eiDisp(data, bs, delta)
-                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EI Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
+                if select_delta: delta = self.selectDelta(data, truebs, select_delta)
+                bs = self.EFBoundary(data, truebs, delta, c, thres)
+                disp[i], wd[i], er[i], cdp[i], cef[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.efDisp(data, bs, delta)
+                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EF Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
                         i, disp[i], cdp[i], cef[i] , wd[i], er[i])
-                if plot: 
-                    self.plot(data, truebs, bs, title = text)
-                
-                data = self.update(data, bs)
-            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef})
+                if plot: self.plot(data, truebs, bs, title = text)
+                data = self.update(data, bs, effort_eps=effort_eps)
+                return_data.append(copy.deepcopy(data))
+            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef}), return_data
+        
+        elif mode == 'rei':
+            data = copy.deepcopy(self.init_data)
+            disp, wd, er, cdp, cef, crei = np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1)
+            for i in range(n_iter+1):
+                truebs = self.trueBoundary(data, thres)
+                if select_delta: delta = self.selectDelta(data, truebs, select_delta)
+                bs = self.REIBoundary(data, truebs, delta, c, thres, beta)
+                disp[i], wd[i], er[i], cdp[i], cef[i], crei[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.efDisp(data, bs, delta), self.reiDisp(data, bs, delta)
+                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EF Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
+                        i, disp[i], cdp[i], cef[i] , wd[i], er[i])
+                if plot: self.plot(data, truebs, bs, title = text)
+                data = self.update(data, bs, effort_eps=effort_eps)
+                return_data.append(copy.deepcopy(data))
+            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef, 'crei': crei}), return_data
 
-        # Bounded Effort
         elif mode == 'be':
             data = copy.deepcopy(self.init_data)
             disp, wd, er, cdp, cef, cbe = np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1)
@@ -354,14 +438,14 @@ class populationDynamics_gaussian(object):
                 truebs = self.trueBoundary(data, thres)
                 if select_delta: delta = self.selectDelta(data, truebs, select_delta)
                 bs = self.BEBoundary(data, truebs, delta, c, thres)
-                disp[i], wd[i], er[i], cdp[i], cef[i], cbe[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.eiDisp(data, bs, delta), self.beDisp(data, bs, delta)
-                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EI Disp: %.3f, Classification BE Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
+                disp[i], wd[i], er[i], cdp[i], cef[i], cbe[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.efDisp(data, bs, delta), self.beDisp(data, bs, delta)
+                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EF Disp: %.3f, Classification BE Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
                         i, disp[i], cdp[i], cef[i], cbe[i], wd[i], er[i])
                 if plot: self.plot(data, truebs, bs, title = text)
-                data = self.update(data, bs)
-            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef, 'cbe': cbe})
+                data = self.update(data, bs, effort_eps=effort_eps)
+                return_data.append(copy.deepcopy(data))
+            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef, 'cbe': cbe}), return_data
 
-        # Equal Recourse
         elif mode == 'er':
             data = copy.deepcopy(self.init_data)
             disp, wd, er, cdp, cef, cer = np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1)
@@ -369,14 +453,14 @@ class populationDynamics_gaussian(object):
                 truebs = self.trueBoundary(data, thres)
                 if select_delta: delta = self.selectDelta(data, truebs, select_delta)
                 bs = self.ERBoundary(data, truebs, delta, c, thres)
-                disp[i], wd[i], er[i], cdp[i], cef[i], cer[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.eiDisp(data, bs, delta), self.erDisp(data, bs, delta)
-                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EI Disp: %.3f, Classification ER Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
+                disp[i], wd[i], er[i], cdp[i], cef[i], cer[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.efDisp(data, bs, delta), self.erDisp(data, bs, delta)
+                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EF Disp: %.3f, Classification ER Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
                         i, disp[i], cdp[i], cef[i], cer[i], wd[i], er[i])
                 if plot: self.plot(data, truebs, bs, title = text)
-                data = self.update(data, bs)
-            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef, 'cer': cer})
+                data = self.update(data, bs, effort_eps=effort_eps)
+                return_data.append(copy.deepcopy(data))
+            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef, 'cer': cer}), return_data
 
-        # ILFCR
         elif mode == 'iler':
             data = copy.deepcopy(self.init_data)
             disp, wd, er, cdp, cef, cer = np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1), np.zeros(n_iter + 1)
@@ -384,12 +468,13 @@ class populationDynamics_gaussian(object):
                 truebs = self.trueBoundary(data, thres)
                 if select_delta: delta = self.selectDelta(data, truebs, select_delta)
                 bs = self.ILERBoundary(data, truebs, delta, c, thres)
-                disp[i], wd[i], er[i], cdp[i], cef[i], cer[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.eiDisp(data, bs, delta), self.ilerDisp(data, bs, delta)
-                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EI Disp: %.3f, Classification ER Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
+                disp[i], wd[i], er[i], cdp[i], cef[i], cer[i] = self.dpDisp(data, truebs), self.distance(data), self.errorRate(data, truebs, bs), self.dpDisp(data, bs), self.efDisp(data, bs, delta), self.ilerDisp(data, bs, delta)
+                text = 'Iteration %d: Underlying DP Disp: %.3f, Classification DP Disp: %.3f, Classification EF Disp: %.3f, Classification ER Disp: %.3f, Wasserstein Distance: %.3f, Error Rate: %.3f' % (
                         i, disp[i], cdp[i], cef[i], cer[i], wd[i], er[i])
                 if plot: self.plot(data, truebs, bs, title = text)
-                data = self.update(data, bs)
-            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef, 'ciler': cer})
+                data = self.update(data, bs, effort_eps=effort_eps)
+                return_data.append(copy.deepcopy(data))
+            return pd.DataFrame({'disp':disp, 'wd':wd, 'er':er, 'cdp':cdp, 'cef':cef, 'ciler': cer}), return_data
 
         else:
             raise ValueError("Unexpected mode %s! Supported mode: \"true\", \"dp\", and \"ef\"." % mode)
